@@ -1,0 +1,44 @@
+# Fan Fold lintian overrides.
+#
+# Every override below is a statement about a specific mechanism in the shipped
+# package, verified against the built artifact. Nothing here is silenced merely
+# because it was noisy.
+
+# ---------------------------------------------------------------- privacy ---
+#
+# All privacy-breach-* hits are inside the single vendored file
+# usr/share/fanfold/qml/vendor/package/dist/index.min.js -- the published Vditor
+# 3.11.2 runtime, retained byte-for-byte for provenance (see
+# usr/share/doc/fanfold/THIRD_PARTY_NOTICES.md). They are Vditor's optional
+# media-embed and demo-content code paths: video iframes (YouTube, TED, Youku,
+# Coub, Dailymotion, Tencent, Facebook), a PlantUML <object>, a Zhihu formula
+# <img>, and an unpkg logo <img> in Vditor's own built-in demo document.
+#
+# None of them can reach the network in Fan Fold. The editor page
+# usr/share/fanfold/qml/editor.html is served locally and declares:
+#
+#   default-src 'none'; img-src 'self' data:; frame-src 'none';
+#   object-src 'none'; media-src 'none'; connect-src 'self'
+#
+# The embedded Chromium in QtWebEngine enforces that policy, so the iframe
+# embeds (frame-src 'none'), the PlantUML object (object-src 'none') and both
+# remote images (img-src 'self' data:) are refused before any request is made.
+# Fan Fold additionally never enables Vditor's preview/export/diagram features
+# that construct these fragments, and points Vditor's `cdn` option at the
+# vendored local tree rather than a remote origin.
+#
+# The strings are therefore unreachable dead code inside a retained upstream
+# artifact. Rewriting the minified bundle to delete them would break the
+# byte-for-byte provenance claim the notices file makes, which is a worse
+# outcome than dead strings that the shipped CSP already neutralises.
+fanfold: privacy-breach-facebook * [usr/share/fanfold/qml/vendor/package/dist/index.min.js]
+fanfold: privacy-breach-logo * [usr/share/fanfold/qml/vendor/package/dist/index.min.js]
+fanfold: privacy-breach-generic * [usr/share/fanfold/qml/vendor/package/dist/index.min.js]
+
+# ---------------------------------------------------------------- changelog ---
+#
+# This package is distributed only through the owner's private estate registry
+# and has no Debian bug tracker to close. The changelog records which qualified
+# upstream source candidate each build came from, which is the fact that
+# actually matters for this distribution path.
+fanfold: initial-upload-closes-no-bugs [usr/share/doc/fanfold/changelog.Debian.gz:1]

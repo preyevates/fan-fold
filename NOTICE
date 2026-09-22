@@ -1,0 +1,68 @@
+# Fan Fold — third-party notices
+
+Fan Fold is a Linux desktop notes application written in Qt 6, QML and C++ for
+KDE Plasma 6. The application itself is original work; the components below are
+included under their own licences.
+
+## Bundled components
+
+- **Vditor** Markdown editor, vendored at `third_party/vditor-3.11.2/`.
+  MIT License, Copyright (c) 2019-present B3log 开源, b3log.org. The complete
+  license text is included at
+  [`third_party/vditor-3.11.2/LICENSE`](third_party/vditor-3.11.2/LICENSE).
+  The vendored distribution includes its own bundled dependencies (for example
+  highlight.js styles and diff-match-patch) under their respective licenses,
+  enumerated in the packaged `THIRD_PARTY_NOTICES.md`.
+
+## Colour palette values
+
+Fan Fold ships 25 curated note palettes. Each one reuses exact published colour
+values from the source named below; the palette arrangement, the ink-contrast
+derivation and the paper/ink pairing are original to this project.
+
+The in-application palette picker shows the same attribution and licence for
+whichever palette is selected, so credit travels with the software.
+
+### Original to this project
+
+**Pastels** and **Grayscale** — original, licensed under the terms of this
+repository.
+
+### ColorBrewer 2.0 — Apache License 2.0
+
+**Bold**, **Muted**, **Light**, **Pastel**, **Soft**, **Deep**, **Paired** and
+**Highlight** use the qualitative schemes Set1, Set2, Set3, Pastel1, Pastel2,
+Dark2, Paired and Accent from ColorBrewer 2.0 (colorbrewer2.org), by Cynthia
+Brewer, Mark Harrower and The Pennsylvania State University.
+
+### Published editor and terminal themes
+
+| Palette | Source | Licence |
+| --- | --- | --- |
+| Nord | Sven Greb | MIT, Copyright (c) 2016-present Sven Greb |
+| Catppuccin | Catppuccin | MIT, Copyright (c) 2021 Catppuccin |
+| Solarized | Ethan Schoonover | MIT, Copyright (c) 2011 Ethan Schoonover |
+| Gruvbox | Pavel Pertsev | MIT, Copyright (c) 2012 Pavel Pertsev |
+| Dracula | Dracula Theme | MIT, Copyright (c) 2016 Dracula Theme |
+| Monokai | Published Monokai scheme | Free to use; colours from the published scheme |
+| One Dark | GitHub, Inc. (Atom) | MIT, Copyright (c) 2016 GitHub Inc. |
+| Tokyo Night | folke | Apache License 2.0, Copyright (c) folke |
+| Ayu | Ike Ku | MIT, Copyright (c) 2016 Ike Ku |
+| Everforest | sainnhe | MIT, Copyright (c) 2020 sainnhe |
+| Rosé Pine | Rosé Pine | MIT, Copyright (c) 2021 Rosé Pine |
+| Material | Mattia Astorino | MIT, Copyright (c) Mattia Astorino |
+| Kanagawa | rebelot | MIT, Copyright (c) 2021 rebelot |
+| GitHub | GitHub, Inc. | MIT, Copyright (c) GitHub Inc. |
+| Nightfox | EdenEast | MIT, Copyright (c) 2021 EdenEast |
+
+## Icons and desktop integration
+
+Application control glyphs are resolved from the desktop's icon theme at
+runtime; no icon font is bundled by the application. The Fan Fold application
+icons (`src/fanfold/packaging/io.github.preyevates.FanFold.svg` and
+`io.github.preyevates.FanFold-symbolic.svg`) are original to this project.
+
+## System dependencies
+
+Qt 6 (including QtWebEngine/Chromium) and KDE Frameworks are linked as system
+libraries under their own licenses; they are not bundled in this repository.

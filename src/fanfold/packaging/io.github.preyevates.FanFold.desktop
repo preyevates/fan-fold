@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Fan Fold
+GenericName=Markdown Notes
+Comment=Local-first Markdown notes at the screen edge
+Exec=fanfold
+Icon=io.github.preyevates.FanFold
+Terminal=false
+Categories=Utility;TextEditor;
+Keywords=notes;markdown;sticky;local;
+StartupNotify=true

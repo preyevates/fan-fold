@@ -1,0 +1,8 @@
+build/
+.cache/
+__pycache__/
+*.user
+
+# Release artefacts produced by tools/make-source.sh. Anchored to the repository root so
+# it cannot swallow the vendored editor's own dist/ directory, which must be tracked.
+/dist/

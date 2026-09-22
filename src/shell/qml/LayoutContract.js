@@ -1,0 +1,67 @@
+.pragma library
+
+/**
+ * Geometry for the edge-docked fan.
+ *
+ * Kept out of Main.qml so the placement rules can be reasoned about — and exercised —
+ * without a compositor. Every function here is pure: same arguments, same result, no
+ * reads of live scene state.
+ *
+ * The deck docks against the right screen edge. The `edge` parameter is carried through
+ * the signatures so a future left/top/bottom placement has somewhere to live, but only
+ * "right" is implemented today and anything else is treated as "right".
+ */
+
+/** Outward lift applied to a stick, in scene pixels.
+ *
+ *  A hovered stick lifts furthest, the current note lifts a little so it reads as
+ *  selected at rest, and everything else sits flush. Lift moves the painted face toward
+ *  the desktop, which on a right-docked deck is negative x; y never changes, because the
+ *  fan's vertical order is the user's own arrangement.
+ */
+function stickLift(edge, isCurrent, isHovered) {
+    var distance = isHovered ? 8 : (isCurrent ? 4 : 0)
+    return { x: -distance, y: 0 }
+}
+
+/** Stacking order for a stick.
+ *
+ *  Hover wins outright, so the stick under the pointer is never occluded by its
+ *  neighbours. The current note sits above the resting deck. Resting sticks descend by
+ *  index, which is what produces the shingled overlap: lower indices paint on top.
+ */
+function stickLayer(index, isCurrent, isHovered) {
+    if (isHovered) {
+        return 300
+    }
+    if (isCurrent) {
+        return 200
+    }
+    return 100 - index
+}
+
+/** Height of a stick's clickable strip.
+ *
+ *  The front stick is fully exposed and takes its whole length. Every stick behind it is
+ *  overlapped by its neighbour, so only one pitch of it is reachable — claiming more
+ *  would put its hit area underneath the stick painted on top, and clicks would land on
+ *  the wrong note.
+ */
+function stickHitLength(tabLength, pitch, index, count) {
+    if (index <= 0) {
+        return tabLength
+    }
+    return Math.min(tabLength, pitch)
+}
+
+/** Window position along the docking axis.
+ *
+ *  Measured against the work area rather than the raw screen, so a panel on the docking
+ *  edge pushes the deck inward instead of hiding underneath it.
+ */
+function dialogEdgeAxisPosition(availablePosition, availableLength, windowLength, edge) {
+    if (edge === "left") {
+        return availablePosition
+    }
+    return availablePosition + availableLength - windowLength
+}

@@ -1,0 +1,266 @@
+/* Theme variables, all injected by appearance.js as CSS custom properties — never by
+   rewriting a rule or the document, so a theme change cannot disturb the undo history.
+   --spine is the note's own paper darkened by the same 1.14 HSV factor the native card
+   uses for its left spine, so fenced code sits on a tone that belongs to this note
+   rather than a flat white wash. --codeink is whichever black/white endpoint has the
+   better contrast against that spine. --tokenboost lifts the vendored (light-background)
+   highlight.js palette on a dark spine by scaling lightness only, so the hue
+   distinctions that carry the meaning survive. */
+:root{--paper:#f5f0e6;--ink:#3b352c;--spine:#d7d2c9;--codeink:#101010;--tokenboost:none;--font:"Noto Sans",sans-serif;--size:13px;--leading:1.4;--padx:20px;--pady:14px;--tabs:4;--icon:16px}
+/* One slim scrollbar rule for every surface this app owns inside the editor: the
+   writing area, the source view, fenced code and the code-block language menu. The
+   thumb wears the note's own spine tone rather than a neutral grey, which reads as
+   foreign on any coloured paper. Geometry stays 8px / 4px — a hint, not a second
+   border. */
+.vditor-reset,.vditor-content,.vditor-sv,.vditor-ir,.vditor-wysiwyg,.vditor-hint,.vditor-panel,.vditor-reset pre>code{
+ scrollbar-width:thin;scrollbar-color:var(--spine) transparent}
+.vditor-reset::-webkit-scrollbar,.vditor-content::-webkit-scrollbar,.vditor-sv::-webkit-scrollbar,
+.vditor-ir::-webkit-scrollbar,.vditor-wysiwyg::-webkit-scrollbar,.vditor-hint::-webkit-scrollbar,
+.vditor-panel::-webkit-scrollbar,.vditor-reset pre>code::-webkit-scrollbar{width:8px;height:8px}
+.vditor-reset::-webkit-scrollbar-track,.vditor-content::-webkit-scrollbar-track,.vditor-sv::-webkit-scrollbar-track,
+.vditor-ir::-webkit-scrollbar-track,.vditor-wysiwyg::-webkit-scrollbar-track,.vditor-hint::-webkit-scrollbar-track,
+.vditor-panel::-webkit-scrollbar-track,.vditor-reset pre>code::-webkit-scrollbar-track{background:transparent}
+.vditor-reset::-webkit-scrollbar-thumb,.vditor-content::-webkit-scrollbar-thumb,.vditor-sv::-webkit-scrollbar-thumb,
+.vditor-ir::-webkit-scrollbar-thumb,.vditor-wysiwyg::-webkit-scrollbar-thumb,.vditor-hint::-webkit-scrollbar-thumb,
+.vditor-panel::-webkit-scrollbar-thumb,.vditor-reset pre>code::-webkit-scrollbar-thumb{background:var(--spine);border-radius:4px}
+.vditor-reset::-webkit-scrollbar-thumb:hover,.vditor-content::-webkit-scrollbar-thumb:hover,
+.vditor-sv::-webkit-scrollbar-thumb:hover,.vditor-ir::-webkit-scrollbar-thumb:hover,
+.vditor-wysiwyg::-webkit-scrollbar-thumb:hover,.vditor-hint::-webkit-scrollbar-thumb:hover,
+.vditor-panel::-webkit-scrollbar-thumb:hover,.vditor-reset pre>code::-webkit-scrollbar-thumb:hover{background:var(--ink)}
+html,body{margin:0;height:100%;background:var(--paper);font:15px sans-serif}*{box-sizing:border-box}.editor{height:100%}.vditor{border:0;border-radius:0;background:var(--paper)}
+.vditor-toolbar{display:none!important;background:var(--paper)!important;border-bottom:1px solid rgba(0,0,0,.16);padding:1px 4px!important;flex-wrap:wrap;min-height:0!important;gap:var(--actiongap,2px)}
+/* Format toolbar buttons share the footer command palette's geometry: `--actionsize`
+   sets the box (icon + 12) and the row uses the footer's `--actiongap`. Sizing the box,
+   not just the svg, is what makes the strip scale with the setting.
+
+   The glyph is deliberately smaller than `--icon`. Vditor's toolbar artwork uses a
+   `0 0 32` viewBox drawn edge to edge (no internal margin), while the Breeze/Papirus
+   icons in the footer use a `0 0 24` viewBox whose artwork spans roughly 1..19 — about
+   25% of the box is built-in padding. At the same pixel size the Vditor glyph therefore
+   carries ~33% more ink and reads as visibly larger. Matching the box is not enough; the
+   ink has to match, so the editor glyph is scaled by the ratio Breeze builds into its own
+   artwork. */
+.vditor-toolbar svg{width:calc(var(--icon) * 0.75);height:calc(var(--icon) * 0.75);color:var(--ink)!important;fill:currentColor}
+.vditor-toolbar button,.vditor-toolbar__item{color:var(--ink)!important;padding:0!important;margin:0!important;min-height:0!important;width:var(--actionsize,28px);height:var(--actionsize,28px);display:inline-flex!important;align-items:center;justify-content:center;border-radius:6px}
+/* Vditor styles the actual clickable as a descendant — `.vditor-toolbar__item
+   .vditor-tooltipped` — with a hardcoded `width:25px` and `height:var(--toolbar-height)`.
+   That selector is more specific than the one above, so without this rule the button box
+   stays 25x35 regardless of `--actionsize`, even though the svg follows the setting
+   correctly. The inner element has to be sized too, or the palettes never match. */
+.vditor-toolbar__item .vditor-tooltipped,.vditor-toolbar__item>button{width:var(--actionsize,28px)!important;height:var(--actionsize,28px)!important;padding:0!important;display:inline-flex!important;align-items:center;justify-content:center}
+.vditor-toolbar button:hover{background:rgba(0,0,0,.07)}
+/* Table strip (see installTableControls in editor.js). Vditor's own table panel is
+   WYSIWYG-only, so instant-render mode has working row/column operations with nothing to
+   click. Wears the note's paper and ink like every other surface in the card. */
+.ff-table-bar{position:fixed;z-index:120;display:none;gap:1px;
+ background:var(--paper);border:1px solid var(--spine);border-radius:5px;
+ padding:1px 2px;box-shadow:0 1px 4px rgba(0,0,0,.18)}
+.ff-table-bar.visible{display:flex}
+.ff-table-bar button{font:11px/1 var(--font);color:var(--ink);background:transparent;
+ border:0;border-radius:3px;padding:3px 5px;cursor:pointer}
+.ff-table-bar button:hover{background:var(--spine)}
+.vditor-hint,.vditor-panel{background:var(--paper)!important;color:var(--ink)!important;border:1px solid rgba(0,0,0,.2)}
+/* The code-block language picker. The vendor gives every entry the toolbar's dark icon
+   colour — invisible ink on a dark paper — and bounds the list's height not at all, so a
+   full language list runs off the card. Entries take the note's ink on the note's paper
+   and the list scrolls inside itself; editor.js pulls it back inside the viewport near an
+   edge.
+
+   The vendor also bounds the width at a flat `max-width:250px` (index.css), wider than a
+   narrow note card, so on a small viewport the list overflows the right edge and fitHint()
+   can only slide it to the left margin, not shrink it. Bounding it to the viewport as well
+   is safe: the vendor's `min-width:80px` still floors it and its entries already ellipsize
+   (`white-space:nowrap;text-overflow:ellipsis`), so narrowing truncates rather than
+   reflows. */
+.vditor-hint{max-height:min(210px,60vh);max-width:min(250px,calc(100vw - 12px))!important;overflow-y:auto;overscroll-behavior:contain;font-family:var(--font)!important}
+.vditor-hint button{color:var(--ink)!important;background-color:transparent!important}
+/* `.vditor-hint--current` is (0,1,0) and lands on the same button the rule above matches
+   at (0,1,1); both are !important, so specificity decides and the transparent fill wins,
+   leaving the keyboard-selected entry with no background (the vendor's own --current rule
+   loses for the same reason). Qualifying with `button` takes it to (0,2,1) so selection
+   actually paints. */
+.vditor-hint button.vditor-hint--current,.vditor-hint button:not(.vditor-menu--disabled):hover,.vditor-hint button:focus{
+ background-color:rgba(127,127,127,.3)!important;color:var(--ink)!important;
+ box-shadow:inset 2px 0 0 currentColor;font-weight:bold}
+/* Vditor draws toolbar tips as ::after (the bubble, content:attr(aria-label)) and
+   ::before (the arrow) — that order, not the reverse. The vendor default is a large
+   #3b3e43 box that matches nothing else in this application, so it is restyled to the
+   same 10px charcoal bubble QuietButton uses in the card chrome.
+
+   The vendor keeps both pseudo-elements at display:none and reveals them on
+   :hover/:focus, so these rules must not declare a `display` of their own — overriding it
+   with !important pins the bubble invisible. Only paint is restyled; the vendor's own
+   show/hide and positioning are left alone. */
+[class*="vditor-tooltipped"]::after{
+ background:#2c2f34!important;color:#e9eaec!important;
+ font-family:var(--font)!important;font-size:10px!important;line-height:1.4!important;
+ padding:3px 6px!important;border-radius:4px!important;
+ box-shadow:0 2px 6px rgba(0,0,0,.35)!important}
+/* The arrow is drawn as a border triangle whose colour comes from `color`. */
+[class*="vditor-tooltipped"]::before{color:#2c2f34!important}
+/* Toolbar tips use the __n / __nw / __ne variants, i.e. above the button. This toolbar is
+   pinned to the top of the editor, so "above" is outside the WebEngine viewport and the
+   bubble is clipped away entirely. Flip the toolbar's own tips downward, into the note,
+   where there is always room. Hint popups elsewhere keep the vendor's placement. */
+.vditor-toolbar [class*="vditor-tooltipped"]::after{
+ top:100%!important;bottom:auto!important;right:50%!important;left:auto!important;
+ margin-top:6px!important;margin-bottom:0!important;margin-left:0!important}
+.vditor-toolbar [class*="vditor-tooltipped"]::before{
+ top:auto!important;bottom:-5px!important;right:50%!important;margin-right:-5px!important;
+ border-top-color:transparent!important;border-bottom-color:#2c2f34!important}
+/* The first and last buttons would push their bubble past the card edge, so pull those
+   in. The bubble lives inside the WebEngine viewport and cannot escape it, so a tip that
+   would overflow is simply sliced off at the note edge. Alignment is expressed as
+   distance from each end (nth-last-child) rather than a hand-counted index, so adding or
+   removing a button cannot silently strand one tip: the six right-most buttons
+   right-align their bubbles and the first two left-align. */
+.vditor-toolbar .vditor-toolbar__item:nth-child(-n+2) [class*="vditor-tooltipped"]::after{right:auto!important;left:0!important}
+.vditor-toolbar .vditor-toolbar__item:nth-last-child(-n+6) [class*="vditor-tooltipped"]::after{right:50%!important;left:auto!important;margin-right:-14px!important;transform:translateX(0)}
+.vditor-toolbar .vditor-toolbar__item:nth-last-child(-n+3) [class*="vditor-tooltipped"]::after{right:0!important;margin-right:0!important}
+.vditor-content,.vditor-reset,.vditor-ir pre.vditor-reset:focus,.vditor-sv,.vditor-wysiwyg{background:var(--paper)!important;color:var(--ink)!important}
+html.formatting .vditor-toolbar{display:flex!important}
+.vditor-reset p:first-child{margin-top:0}
+.vditor-reset,.vditor-sv{font-family:var(--font)!important;font-size:var(--size)!important;line-height:var(--leading)!important;padding:var(--pady) var(--padx) var(--pady)!important;tab-size:var(--tabs)!important;caret-color:var(--ink);scroll-padding-top:8px;scroll-padding-bottom:8px}
+.vditor-reset pre,.vditor-reset code{tab-size:var(--tabs)!important}
+.vditor-reset h1{font-size:1.7em}.vditor-reset h2{font-size:1.3em}
+/* Headings and rules wear the note's own spine tone. The vendor content theme paints
+   both with a hardcoded GitHub grey (#eaecef in css/content-theme/light.css), the same
+   flat-white-on-every-paper problem the table grid has. The h1/h2 underline is kept, but
+   derived from the note rather than imported. */
+.vditor-reset h1,.vditor-reset h2{border-bottom:1px solid var(--spine)!important}
+.vditor-reset hr{background-color:var(--spine)!important;border-color:var(--spine)!important}
+.vditor-reset blockquote{color:var(--ink);opacity:.85;border-left-color:currentColor}
+.vditor-sv__marker,.vditor-ir__marker{color:var(--ink)!important;opacity:.7}
+.vditor-reset a{color:var(--ink);text-decoration:underline}
+.vditor-reset code{background:rgba(255,255,255,.35);color:var(--ink)}
+/* Fenced code — the editable IR source and the rendered preview alike — sits on the
+   note's own derived spine tone rather than a flat translucent white, which would be the
+   same colour on every paper. Both halves read the same variable, so source and render
+   can never disagree, and a paper change repaints them live: appearance.js only assigns
+   CSS custom properties, so nothing calls setValue, rewrites the document or touches the
+   undo history.
+
+   The untokenised base text takes --codeink, whichever black/white endpoint has the
+   better contrast against this exact spine, so source stays legible on a cream, charcoal
+   or saturated paper. Highlighting is not disabled and tokens are not flattened to one
+   ink: every .hljs-* span keeps the vendored stylesheet's colour and is lifted by
+   --tokenboost on a dark spine, which scales lightness only so the hue differences that
+   carry the meaning survive. */
+.vditor-reset pre>code{
+ background:var(--spine)!important;color:var(--codeink)!important;
+ caret-color:var(--codeink);border-radius:5px;padding:8px 10px!important;display:block}
+.vditor-reset pre>code [class*="hljs-"],.vditor-reset pre>code span[class^="hljs"]{filter:var(--tokenboost)}
+.vditor-reset pre{background:transparent!important}
+/* Code stays fixed-width whatever the note body font is. The global family setting is a
+   writing choice for prose; a proportional font in a fence would move every column. */
+.vditor-reset pre,.vditor-reset pre code,.vditor-reset pre>code{font-family:"DejaVu Sans Mono","Noto Sans Mono",monospace!important}
+/* Tables inherit the note, not GitHub. The vendor paints every row white/#fafbfc with
+   flat grey #dfe2e5 borders, i.e. a white grid stamped onto whatever paper the note
+   wears. Instead rows sit on the paper itself, text takes the note's ink and font,
+   borders take the note's spine tone, and the alternating stripe is the spine at low
+   opacity so it stays a hint on any colour. */
+.vditor-reset table tr{background-color:transparent!important;border-top:1px solid var(--spine)!important}
+.vditor-reset table td,.vditor-reset table th{
+ border:1px solid var(--spine)!important;color:var(--ink)!important;
+ font-family:var(--font)!important}
+.vditor-reset table th{background-color:color-mix(in srgb, var(--spine) 45%, transparent)!important}
+.vditor-reset table tbody tr:nth-child(2n){background-color:color-mix(in srgb, var(--spine) 22%, transparent)!important}
+
+/* Audio players wear the note, not Chromium's default white capsule.
+
+   Chromium paints <audio controls> as an opaque near-white pill with its own rounded
+   background — the one element in the card that ignores the paper entirely.
+
+   The control's internals live in a closed shadow root: most
+   ::-webkit-media-controls-* selectors were removed from Chromium, so the play triangle,
+   timer and seek line cannot be recoloured from here. The element box itself is ours, and
+   properties that inherit into the shadow tree reach what CSS cannot select.
+
+   So: strip the background, border and radius to kill the capsule, then hand the widget
+   `color-scheme`, the one property that crosses into that shadow root. appearance.js sets
+   --audioscheme per note from the same WCAG luminance test that picks the auto ink, so a
+   dark note gets the light-on-dark control and a pale note the dark-on-light one. */
+.vditor-reset audio,
+.vditor-ir audio,
+.vditor-wysiwyg audio,
+.vditor-sv audio {
+  background: transparent !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  outline: none !important;
+  display: block;
+  max-width: 100%;
+  color-scheme: var(--audioscheme, light);
+  /* Chromium's control is a fixed ~54px tall and Vditor adds the paragraph's own margins,
+     so one clip costs roughly three lines of note. The element box cannot be shortened —
+     the shadow root enforces that height — but it can be scaled, which shrinks the glyphs
+     with it rather than clipping them. 0.72 keeps the play triangle and timer comfortably
+     readable while reclaiming a line; the negative bottom margin absorbs the space the
+     un-scaled box still reserves in flow, since a transform does not change layout
+     height. */
+  height: 54px;
+  transform: scale(0.72);
+  transform-origin: left center;
+  margin: 0 0 -14px -2px;
+}
+/* The paragraph Vditor wraps around a lone <audio> adds two more lines of leading to a
+   control that is already tall. Collapse it when audio is all it holds. */
+.vditor-reset p:has(> audio:only-child),
+.vditor-ir p:has(> audio:only-child) {
+  margin-top: 0.15em;
+  margin-bottom: 0.15em;
+}
+
+/* The capsule fill lives on the shadow-DOM enclosure, not the element box: styling the
+   <audio> element alone leaves the near-white #f1f1f3 pill in place.
+   ::-webkit-media-controls-enclosure and -panel are the two parts Chromium still exposes
+   to the page; the play triangle, timer and seek line are unreachable and are handled by
+   color-scheme above. */
+audio::-webkit-media-controls-enclosure,
+audio::-webkit-media-controls-panel {
+  background: transparent !important;
+  box-shadow: none !important;
+  border-radius: 0 !important;
+}
+
+/* ---- Recording state -------------------------------------------------------------
+   Loud on purpose: the vendor's "current menu" tint is not readable as an active-recording
+   state, which is the one state a user needs to see from across the room. */
+.vditor-toolbar [data-type="record"].ff-recording svg{ color:#d33; fill:#d33; }
+.vditor-toolbar [data-type="record"].ff-recording{
+  color:#d33;
+  border-radius:4px;
+  animation: ff-rec-pulse 1.25s ease-in-out infinite;
+}
+@keyframes ff-rec-pulse{
+  0%,100%{ background: color-mix(in srgb, #d33 14%, transparent); }
+  50%    { background: color-mix(in srgb, #d33 34%, transparent); }
+}
+/* A running clock in small text below the icon, absolutely positioned so it occupies no
+   layout space: an inline clock widens the toolbar mid-recording and shifts every button
+   after it. The toolbar clips overflow, so the row's overflow is opened just enough for
+   the 9px line to show. */
+.ff-rec-clock{
+  position:absolute; left:50%; transform:translateX(-50%);
+  top:100%; margin-top:-3px;
+  font-size:9px; line-height:1; font-variant-numeric:tabular-nums;
+  color:#d33; font-weight:600; pointer-events:none; white-space:nowrap;
+}
+.vditor-toolbar [data-type="record"].ff-recording{ overflow:visible; }
+/* Respect the platform's reduced-motion setting: keep the colour, drop the pulse. */
+@media (prefers-reduced-motion: reduce){
+  .vditor-toolbar [data-type="record"].ff-recording{ animation:none;
+    background: color-mix(in srgb, #d33 24%, transparent); }
+}
+
+/* ---- Wrapped images ---------------------------------------------------------------
+   `![label~wrap](href)`: the ~wrap alt suffix is Fan Fold's own convention for "float
+   this image left and let the paragraph hug it". It exists because Vditor's IR mode
+   renders inline HTML as a permanently escaped source marker, so wrap has to be
+   expressed in pure Markdown with the styling carried here. Other renderers simply show
+   the image with "~wrap" in its alt text. */
+.vditor-reset img[alt$="~wrap"]{
+  float:left; width:72px; height:auto;
+  margin:2px 12px 6px 0;
+}

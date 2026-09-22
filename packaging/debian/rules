@@ -1,0 +1,36 @@
+#!/usr/bin/make -f
+# Fan Fold Debian packaging.
+#
+# The upstream tree is a plain CMake project that already installs to correct FHS
+# locations under CMAKE_INSTALL_PREFIX (binary in bin, assets in share/fanfold,
+# desktop entry and icons in the XDG locations). debhelper's cmake buildsystem
+# therefore needs no override beyond the two points below.
+
+export DH_VERBOSE = 1
+
+%:
+	dh $@ --buildsystem=cmake
+
+# BUILD_TESTING is off: the upstream CTest suite is the qualification gate run
+# against the source candidate, not a packaging step. Enabling it here would add
+# Qt6::Test, Xvfb and Python build dependencies to produce no packaged artifact.
+#
+# FANFOLD_LOCAL_THEME_CATALOG_DIR is deliberately left empty. That is upstream's
+# public-package default and keeps the uncleared TerminalColors catalog out of
+# every published artifact.
+# The packaged revision is taken from the changelog dpkg is already building from,
+# so Settings -> About reports the version the user actually installed rather than a
+# constant somebody has to remember to bump.
+DEB_VERSION := $(shell dpkg-parsechangelog -SVersion)
+
+override_dh_auto_configure:
+	dh_auto_configure -- \
+		-DCMAKE_BUILD_TYPE=Release \
+		-DBUILD_TESTING=OFF \
+		-DFANFOLD_BUILD_VERSION="$(DEB_VERSION)" \
+		-DFANFOLD_LOCAL_THEME_CATALOG_DIR=
+
+# QtWebEngine and QtWebChannel are QML imports resolved at runtime, not linked
+# libraries, so dpkg-shlibdeps cannot see them; they are declared by hand in
+# debian/control alongside the other qml6-module-* imports. Everything the ELF
+# actually links is derived by the default dh_shlibdeps into ${shlibs:Depends}.

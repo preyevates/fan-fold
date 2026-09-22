@@ -1,0 +1,65 @@
+.TH FANFOLD 1 "" "Fan Fold 0.1.0" "User Commands"
+.SH NAME
+fanfold \- edge-fan Markdown notes over an ordinary folder
+.SH SYNOPSIS
+.B fanfold
+.RI [ options ]
+.SH DESCRIPTION
+.B Fan Fold
+is a Qt 6 desktop note shell that edits ordinary Markdown files in a folder
+chosen by the user. Notes are never copied into an application database, so the
+folder remains readable, searchable and syncable by any other tool.
+.PP
+The window rests at the screen edge and fans the notes out as overlapping
+cards. It provides a recursive library with search, bounded offline rich-text
+editors, autosave with conflict recovery, archive and restore, desktop trash,
+movable pinned note windows, per-note paper and ink colours, and global
+typography and layout settings.
+.PP
+On first run Fan Fold asks which folder of Markdown files to open. That choice
+is remembered; no pre-existing file is moved, rewritten or converted.
+.SH OPTIONS
+.TP
+.BI \-\-root " folder"
+Open this folder of Markdown notes instead of the remembered one. The folder is
+read and written in place.
+.TP
+.BI \-\-state " folder"
+Use this directory for application state instead of the XDG data home. This
+redirects the document index, fan order, per-note metadata and crash-recovery
+journal, and is intended for isolated or disposable runs.
+.TP
+.B \-h ", " \-\-help
+Show a usage summary and exit.
+.TP
+.B \-v ", " \-\-version
+Show the version and exit.
+.SH FILES
+.TP
+.I ~/.config/FanFold/
+Settings, including the remembered notes folder, plus
+.IR appearance.json .
+.TP
+.I ~/.local/share/FanFold/
+Document index, fan order, per-note metadata and the crash-recovery journal.
+Overridden by
+.BR \-\-state .
+.TP
+.I ~/.cache/FanFold/
+Disposable Qt and QtWebEngine cache data.
+.TP
+.I /usr/share/fanfold/
+Installed QML shell, editor bridge and the vendored offline editor runtime.
+.PP
+Notes themselves live only in the folder the user selected. Removing the
+package leaves that folder, and everything above under the user's home
+directory, untouched.
+.SH NETWORK
+Fan Fold performs no network access of its own. The editor runtime is vendored
+and loaded from the local filesystem; no content is fetched from a CDN at
+startup or during editing.
+.SH SEE ALSO
+The installed third-party inventory at
+.I /usr/share/doc/fanfold/THIRD_PARTY_NOTICES.md
+and the licence texts under
+.IR /usr/share/doc/fanfold/licenses/ .

@@ -1,0 +1,132 @@
+/* The settings panel wears the note's own paper, matching the File details and Library
+   panels so there is one panel idiom rather than a fixed-charcoal odd man out. The
+   neutral token names remain the internal vocabulary but are DERIVED from the note:
+   paper ground, ink text, ink-tinted raised fields and hairlines via color-mix, so the
+   panel repaints with the note it settles over and stays legible on any colour — the
+   same recipe as the in-card panels' Qt.lighter/Qt.darker. Keyboard focus keeps its
+   blue accent. */
+#settings{
+ --neutral-bg:var(--paper,#f5f0e6);
+ --neutral-raised:color-mix(in srgb,var(--ink,#1b1b1f) 7%,var(--paper,#f5f0e6));
+ --neutral-line:color-mix(in srgb,var(--ink,#1b1b1f) 26%,var(--paper,#f5f0e6));
+ --neutral-scroll:color-mix(in srgb,var(--ink,#1b1b1f) 18%,var(--paper,#f5f0e6));
+ --neutral-text:var(--ink,#1b1b1f);
+ --neutral-dim:color-mix(in srgb,var(--ink,#1b1b1f) 62%,var(--paper,#f5f0e6));
+ --neutral-focus:#4c8dff;
+ box-sizing:border-box;position:absolute;z-index:10;right:8px;top:0;width:320px;
+ max-width:calc(100% - 16px);max-height:calc(100% - 8px);overflow:hidden;display:flex;flex-direction:column;
+ background:var(--neutral-bg);color:var(--neutral-text);border:1px solid var(--neutral-line);border-radius:12px;
+ box-shadow:0 8px 28px #0008;font:12px "Noto Sans",sans-serif;padding:12px}
+#settings[hidden]{display:none}#settings *{box-sizing:border-box}
+#settings header{display:flex;align-items:center;justify-content:space-between;font-size:15px;flex-shrink:0;gap:8px}
+/* Application icon and name lead the panel; "Settings" demotes to a quiet sub-label.
+   The icon is the same SVG the launcher shows and inherits no panel styling. */
+#settings header #settings-appicon{width:20px;height:20px;flex:0 0 auto}
+#settings header strong{flex:0 0 auto}
+#settings header .header-sub{flex:1 1 auto;color:var(--neutral-dim);font-size:12px}
+/* Notes-folder row: a small folder-glyph button beside the full path. */
+#settings #library-change{height:24px;width:30px;padding:0;font-size:13px;line-height:1;flex:0 0 auto}
+#settings #library-path{word-break:break-all;font-size:10px;color:var(--neutral-dim)}
+#settings .credits{line-height:1.5}
+/* About: application name and build on one line, the version the quieter half of the
+   pair. The flex rule above is scoped to `label.row` and this row is a div, so it
+   inherits no layout and the two spans would run together. Declare the layout here
+   rather than widening the label selector. */
+#settings .aboutrow{display:flex;flex-direction:row;align-items:baseline;
+  justify-content:space-between;gap:12px}
+#settings .aboutver{opacity:.62;font-variant-numeric:tabular-nums;font-size:11px}
+#settings .credits-h{margin:14px 0 4px;font-size:11px;font-weight:600;opacity:.75}
+#settings .lede{color:var(--neutral-dim);margin:2px 0 8px;flex-shrink:0}
+/* Every list and field is neutral and legible: the popup list of 100+ themes included,
+   which would otherwise inherit a light platform default and flash white on this card. */
+#settings input,#settings select,#settings button{font:inherit;color:var(--neutral-text);
+ background:var(--neutral-raised);border:1px solid var(--neutral-line);border-radius:5px}
+#settings option,#settings optgroup{background:var(--neutral-bg);color:var(--neutral-text)}
+#settings button{cursor:pointer}
+#settings button:hover{background:color-mix(in srgb,var(--ink,#1b1b1f) 14%,var(--paper,#f5f0e6))}
+#settings h2{font-size:12px;font-weight:600;margin:10px 0 6px;color:var(--neutral-text)}
+#settings section{border-bottom:1px solid var(--neutral-line);padding-bottom:8px}
+#settings section.last{border-bottom:0}
+/* One control per line: name on the left, field on the right. Compact rows, uniform
+   field metrics, so the column of numbers is a column rather than a ragged edge. */
+#settings label.row{display:flex;flex-direction:row;align-items:center;justify-content:space-between;
+ gap:10px;margin:0 0 5px;font-size:11px;min-width:0;min-height:26px}
+#settings label.row>span{flex:1 1 auto;min-width:0}
+#settings label.theme-row{flex-direction:column;align-items:stretch;gap:5px}
+#settings #palette-select{width:100%}
+#settings .settings-body{padding-left:3px;padding-top:3px;padding-bottom:3px}
+#settings input[type="number"],#settings select{flex:0 0 auto;width:96px;height:26px;padding:2px 6px}
+#settings label.checkbox input[type="checkbox"]{flex:0 0 auto;width:16px;height:16px;margin:0;accent-color:var(--neutral-focus)}
+#settings small{display:block;font-size:10px;color:var(--neutral-dim);line-height:1.4;margin:0 0 6px}
+#settings .settings-body{min-height:0;overflow:auto;padding-right:4px}
+#settings header,#settings footer{flex-shrink:0}
+#settings footer{display:flex;align-items:center;gap:10px;background:var(--neutral-bg);padding:9px 0 0;
+ border-top:1px solid var(--neutral-line)}
+#settings #reset-appearance{padding:4px 10px;min-height:26px}
+/* Failure only. A routine save says nothing; an error is red, legible and stays put. */
+#settings #appearance-status{margin:0;color:#d9534f;flex:1 1 auto}
+#appearance-status[hidden]{display:none}
+/* The panel's × is the note's × glyph: transparent and borderless at rest so it is not a
+   second button competing with the title, and plainly visible under pointer or keyboard. */
+#settings #close-settings{background:transparent;border:0;color:var(--neutral-text);
+ width:24px;height:24px;line-height:1;padding:0;font-size:16px;border-radius:6px;opacity:.85}
+#settings #close-settings:hover{background:color-mix(in srgb,var(--ink,#1b1b1f) 14%,var(--paper,#f5f0e6));opacity:1}
+#settings input:invalid{outline:1px solid #a24332}
+/* The one accent: keyboard focus, in blue, on every field, list and button alike. */
+#settings :focus-visible,#settings input:focus,#settings select:focus{outline:2px solid var(--neutral-focus);outline-offset:1px}
+/* --- The in-page combobox ---------------------------------------------------------
+   The two long lists here — themes and installed font families — are not native
+   <select> elements. A select's dropdown is a platform popup that no rule in this file
+   can reach, so it renders with a pale platform scrollbar beside the panel's own slim
+   dark one. As real DOM the list wears the panel's tones, including the same
+   8 px / 4 px slim scrollbar the body uses. */
+#settings .combo{position:relative;display:block;width:100%}
+#settings .combo-slot{display:block;width:100%}
+#settings .combo-button{display:flex;align-items:center;justify-content:space-between;gap:6px;
+ width:100%;min-height:26px;padding:2px 6px;text-align:left;cursor:pointer}
+#settings .combo-value{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#settings .combo-caret{flex:0 0 auto;color:var(--neutral-dim);font-size:9px}
+/* An unavailable saved family is shown as what is actually painted, and marked as a
+   fallback rather than presented as the configured choice. */
+#settings .combo-button.combo-fallback .combo-value{color:var(--neutral-dim);font-style:italic}
+/* The open list is a child of the document, not of the scrolling settings body: that
+   body clips (overflow:auto) and the panel clips again (overflow:hidden), so a list
+   longer than the space under its button would be sliced off. Fixed to the viewport it
+   cannot be clipped, and appearance.js bounds it to the viewport rect. It carries its
+   own copy of the neutral tokens because it no longer sits inside #settings to
+   inherit them. */
+.combo-pop{--neutral-bg:#15171b;--neutral-raised:#1b1e24;--neutral-line:#242c3b;
+ --neutral-scroll:#2a2c2f;--neutral-text:#d8dfe6;--neutral-dim:#98a2b0;--neutral-focus:#4c8dff;
+ position:fixed;z-index:40;box-sizing:border-box;
+ background:var(--neutral-bg);color:var(--neutral-text);
+ border:1px solid var(--neutral-line);border-radius:6px;
+ box-shadow:0 8px 20px #000a;padding:4px;display:flex;flex-direction:column;gap:4px;
+ font:12px "Noto Sans",sans-serif}
+.combo-pop *{box-sizing:border-box}
+.combo-pop[hidden]{display:none}
+.combo-search{width:100%;height:24px;padding:2px 6px;flex:0 0 auto;font:inherit;
+ color:var(--neutral-text);background:var(--neutral-raised);
+ border:1px solid var(--neutral-line);border-radius:5px}
+.combo-search:focus{outline:2px solid var(--neutral-focus);outline-offset:1px}
+.combo-list{list-style:none;margin:0;padding:0;overflow-y:auto;overscroll-behavior:contain;
+ scrollbar-width:thin;scrollbar-color:var(--neutral-scroll) transparent}
+.combo-list::-webkit-scrollbar{width:8px}
+.combo-list::-webkit-scrollbar-track{background:transparent}
+.combo-list::-webkit-scrollbar-thumb{background:var(--neutral-scroll);border-radius:4px}
+.combo-list::-webkit-scrollbar-thumb:hover{background:color-mix(in srgb,var(--ink,#1b1b1f) 30%,var(--paper,#f5f0e6))}
+.combo-option{padding:3px 6px;border-radius:4px;cursor:pointer;
+ overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px}
+.combo-option[aria-selected="true"]{font-weight:600}
+/* Keyboard position in the list, in the panel's single accent, so arrowing through a
+   long list is visible without introducing a second colour language. */
+.combo-option.active{background:color-mix(in srgb,var(--ink,#1b1b1f) 14%,var(--paper,#f5f0e6));box-shadow:inset 2px 0 0 var(--neutral-focus)}
+.combo-empty{padding:3px 6px;color:var(--neutral-dim);font-size:11px}
+/* A slim dark thumb on a transparent track, so the scrollbar is a hint rather than a
+   second border down the side of the panel. */
+#settings .settings-body{scrollbar-width:thin;scrollbar-color:var(--neutral-scroll) transparent}
+#settings .settings-body::-webkit-scrollbar{width:8px}
+#settings .settings-body::-webkit-scrollbar-track{background:transparent}
+#settings .settings-body::-webkit-scrollbar-thumb{background:var(--neutral-scroll);border-radius:4px}
+#settings .settings-body::-webkit-scrollbar-thumb:hover{background:color-mix(in srgb,var(--ink,#1b1b1f) 30%,var(--paper,#f5f0e6))}
+/* The author line sits with About, in the same key/value shape as the version. */
+#settings .aboutby{margin-top:6px;font-size:11px;opacity:.8}

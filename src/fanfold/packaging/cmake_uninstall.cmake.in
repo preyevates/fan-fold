@@ -1,0 +1,35 @@
+if(NOT EXISTS "@CMAKE_BINARY_DIR@/install_manifest.txt")
+    message(FATAL_ERROR "No install manifest found; install this build before uninstalling it")
+endif()
+
+file(STRINGS "@CMAKE_BINARY_DIR@/install_manifest.txt" installed_files)
+foreach(installed_file IN LISTS installed_files)
+    set(staged_file "$ENV{DESTDIR}${installed_file}")
+    if(IS_SYMLINK "${staged_file}" OR EXISTS "${staged_file}")
+        file(REMOVE "${staged_file}")
+        if(IS_SYMLINK "${staged_file}" OR EXISTS "${staged_file}")
+            message(FATAL_ERROR "Failed to remove ${staged_file}")
+        endif()
+    endif()
+endforeach()
+
+# Only remove directories when empty. User config, cache, application data and Markdown
+# are outside the install manifest and are therefore never candidates for removal.
+foreach(relative_dir
+        "@CMAKE_INSTALL_DATADIR@/doc/fanfold/licenses"
+        "@CMAKE_INSTALL_DATADIR@/doc/fanfold"
+        "@CMAKE_INSTALL_DATADIR@/fanfold/web/vendor/dist"
+        "@CMAKE_INSTALL_DATADIR@/fanfold/web/vendor"
+        "@CMAKE_INSTALL_DATADIR@/fanfold/web"
+        "@CMAKE_INSTALL_DATADIR@/fanfold/themes"
+        "@CMAKE_INSTALL_DATADIR@/fanfold/qml/FanFold"
+        "@CMAKE_INSTALL_DATADIR@/fanfold/qml"
+        "@CMAKE_INSTALL_DATADIR@/fanfold")
+    set(staged_dir "$ENV{DESTDIR}@CMAKE_INSTALL_PREFIX@/${relative_dir}")
+    if(IS_DIRECTORY "${staged_dir}")
+        file(GLOB remaining "${staged_dir}/*")
+        if(NOT remaining)
+            file(REMOVE_RECURSE "${staged_dir}")
+        endif()
+    endif()
+endforeach()

@@ -1,0 +1,43 @@
+Source: fanfold
+Section: utils
+Priority: optional
+Maintainer: preyevates <preyevates@users.noreply.github.com>
+Build-Depends:
+ debhelper-compat (= 13),
+ cmake (>= 3.22),
+ g++,
+ qt6-base-dev (>= 6.8),
+ qt6-declarative-dev (>= 6.8),
+Standards-Version: 4.7.0
+Homepage: https://github.com/preyevates/fan-fold
+Rules-Requires-Root: no
+
+Package: fanfold
+Architecture: any
+Depends:
+ ${shlibs:Depends},
+ ${misc:Depends},
+ qml6-module-qtqml,
+ qml6-module-qtquick,
+ qml6-module-qtquick-controls,
+ qml6-module-qtquick-layouts,
+ qml6-module-qtquick-dialogs,
+ qml6-module-qtquick-window,
+ qml6-module-qtwebchannel,
+ qml6-module-qtwebengine,
+ qml6-module-org-kde-kirigami,
+ qml6-module-org-kde-iconthemes,
+ plasma-desktoptheme,
+Description: edge-fan Markdown notes over an ordinary folder
+ Fan Fold is a Qt 6 desktop note shell that edits ordinary Markdown files in a
+ folder the user chooses. Notes are never copied into an application database,
+ so the folder stays readable, greppable and syncable by any other tool.
+ .
+ The window rests at the screen edge and fans the notes out as overlapping
+ cards. It provides a recursive library with search, bounded offline rich-text
+ editors, autosave with conflict recovery, archive and restore, desktop trash,
+ movable pinned note windows, per-note paper and ink colours, and global
+ typography and layout settings.
+ .
+ The editor runtime is vendored offline; Fan Fold loads no content from a CDN
+ or any other network source.
