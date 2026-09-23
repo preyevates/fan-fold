@@ -1816,9 +1816,10 @@ PlasmaCore.Dialog {
             readonly property int libraryRowPitch: 32   // 30 px row + 2 px spacing
             readonly property int libraryChrome: 96     // header + subtitle + rule + margins
             // The footer cap is honoured only when the footer has a REAL position: during
-            // layout `footer.y` transiently reports a value that makes the cap negative, and
-            // a naive Math.min then pins the panel to its 140 px floor permanently.
-            readonly property int libraryCap: footer.y > y + 140 ? footer.y - y - 12 : 100000
+            // layout its translated y can transiently make the cap negative, and a naive
+            // Math.min then pins the panel to its 140 px floor permanently.
+            readonly property int libraryCap:
+                LayoutContract.libraryPanelCap(paper.y, footer.y, y, 140, 12)
             height: Math.max(140, Math.min(libraryModel.count * libraryRowPitch + libraryChrome,
                                            libraryCap))
             radius: 8

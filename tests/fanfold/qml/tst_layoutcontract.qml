@@ -95,6 +95,12 @@ Item {
             root.lastClicked = -1
         }
 
+        function test_library_panel_cap_uses_scene_coordinates() {
+            compare(LayoutContract.libraryPanelCap(600, 500, 650, 140, 12), 438,
+                    "the footer's paper-local y must be translated by paper.y before "
+                    + "it is compared with the panel's surface-local y")
+        }
+
         /* The y coordinate a user aims at for stick i: the middle of the part of stick i
          * he can actually SEE.
          *

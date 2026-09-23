@@ -65,3 +65,14 @@ function dialogEdgeAxisPosition(availablePosition, availableLength, windowLength
     }
     return availablePosition + availableLength - windowLength
 }
+
+/** Height available between a surface-local panel and a footer inside the paper.
+ *
+ *  The footer's y is local to the paper while the panel's y is local to their shared
+ *  surface. Translate the footer before comparing them; otherwise a vertically offset
+ *  card can make a real cap look invalid and leave the panel too tall to scroll.
+ */
+function libraryPanelCap(paperY, footerY, panelY, minimumHeight, gap) {
+    var footerSurfaceY = paperY + footerY
+    return footerSurfaceY > panelY + minimumHeight ? footerSurfaceY - panelY - gap : 100000
+}
