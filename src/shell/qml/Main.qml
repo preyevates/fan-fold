@@ -1915,6 +1915,11 @@ PlasmaCore.Dialog {
                     id: libraryRow
                     required property int index
                     required property string name
+                    // LibraryModel's root-relative path is the payload of the folder-scoping
+                    // gesture. Qt only materialises model roles declared as required properties;
+                    // omitting this made libraryRow.path undefined and every folder click resolve
+                    // to the root.
+                    required property string path
                     required property int depth
                     required property bool isFolder
                     required property bool archived
@@ -2033,21 +2038,23 @@ PlasmaCore.Dialog {
                             text: libraryRow.armed ? "Restore?" : "Archived"
                         }
                     }
-                    MouseArea {
+                    LibraryRowAction {
                         id: libraryRowArea
-                        anchors.fill: parent; hoverEnabled: true
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: {
+                        anchors.fill: parent
+                        folder: libraryRow.isFolder
+                        archived: libraryRow.archived
+                        folderPath: libraryRow.path
+                        documentId: libraryRow.documentId
+                        onFolderRequested: function(folderPath) {
                             // Opening a folder IS the scoping gesture: the fan becomes that
                             // folder's notes. Expanding the subtree is the folder ICON's job
                             // (rowIcon above), so one press never does both.
-                            if(libraryRow.isFolder) {
-                                if(libraryRow.archived) return   // Archive is never a fan scope
-                                libraryModel.revealFolder(libraryRow.path)
-                                dialog.scopeToFolder(libraryRow.path)
-                                dialog.libraryOpen = false
-                            }
-                            else if(libraryRow.documentId) dialog.openFromLibrary(libraryRow.documentId)
+                            libraryModel.revealFolder(folderPath)
+                            dialog.scopeToFolder(folderPath)
+                            dialog.libraryOpen = false
+                        }
+                        onDocumentRequested: function(documentId) {
+                            dialog.openFromLibrary(documentId)
                         }
                     }
                     Accessible.role: Accessible.Button

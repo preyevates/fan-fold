@@ -90,6 +90,7 @@ install(FILES
     qml/Main.qml
     qml/PinnedNoteWindow.qml
     qml/QuietButton.qml
+    qml/LibraryRowAction.qml
     qml/LayoutContract.js
     qml/index.html
     qml/app.js

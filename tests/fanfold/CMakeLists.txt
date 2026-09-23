@@ -62,8 +62,14 @@ if(QMLTESTRUNNER_EXECUTABLE)
         ${CMAKE_CURRENT_SOURCE_DIR}/../../src/shell/qml/LayoutContract.js
         ${FANFOLD_QML_TEST_STAGE}/LayoutContract.js COPYONLY)
     configure_file(
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../src/shell/qml/LibraryRowAction.qml
+        ${FANFOLD_QML_TEST_STAGE}/LibraryRowAction.qml COPYONLY)
+    configure_file(
         ${CMAKE_CURRENT_SOURCE_DIR}/qml/tst_layoutcontract.qml
         ${FANFOLD_QML_TEST_STAGE}/tst_layoutcontract.qml COPYONLY)
+    configure_file(
+        ${CMAKE_CURRENT_SOURCE_DIR}/qml/tst_libraryrowaction.qml
+        ${FANFOLD_QML_TEST_STAGE}/tst_libraryrowaction.qml COPYONLY)
 
     add_test(
         NAME fanfold-layoutcontract
