@@ -95,6 +95,59 @@ bool isArchivedPath(const QString &relativePath)
         || relativePath.startsWith(QLatin1String(archiveFolderName) + QLatin1Char('/'));
 }
 
+/** Schema version of the XDG index this build writes.
+ *
+ * 1 — flat `"fan"` array: one curated working set for the whole library.
+ * 2 — `"folderOrder"` (folder -> ordered ids) plus `"openFolder"`: the fan is a window
+ *     onto one folder, so ORDER is per folder and membership is derived.
+ */
+constexpr int kIndexVersion = 2;
+
+/** Root-relative folder of a root-relative note path; the root is an empty string. */
+QString folderOfPath(const QString &relativePath)
+{
+    const QString parent = QFileInfo(QDir::cleanPath(relativePath)).path();
+    return parent == QStringLiteral(".") ? QString() : parent;
+}
+
+/** Rewrite a version-1 index as version 2 without losing a single note.
+ *
+ * The old flat `fan` array is split by the folder each note actually lives in, and each
+ * folder's order is the old flat order filtered to that folder — so the sequence the user
+ * arranged survives the split wherever it is still meaningful. `documents` is untouched,
+ * which is what guarantees no note is lost: the catalog never lived in `fan`.
+ */
+QJsonObject migrateIndexToVersion2(const QJsonObject &stored)
+{
+    QJsonObject migrated = stored;
+    const QJsonObject documents = stored.value(QStringLiteral("documents")).toObject();
+    QHash<QString, QJsonArray> byFolder;
+    QStringList folderOrder; // stable key order, so the written file is deterministic
+    for (const QJsonValue &value : stored.value(QStringLiteral("fan")).toArray()) {
+        const QString id = value.toString();
+        if (id.isEmpty() || !documents.contains(id)) {
+            continue;
+        }
+        const QString folder =
+            folderOfPath(documents.value(id).toObject().value(QStringLiteral("path")).toString());
+        if (!byFolder.contains(folder)) {
+            folderOrder.append(folder);
+        }
+        byFolder[folder].append(id);
+    }
+    QJsonObject orders;
+    for (const QString &folder : std::as_const(folderOrder)) {
+        orders.insert(folder, byFolder.value(folder));
+    }
+    migrated.remove(QStringLiteral("fan"));
+    migrated.insert(QStringLiteral("folderOrder"), orders);
+    // A migrated library opens at the root: the pre-0.2.0 fan spanned every folder, so no
+    // stored scope exists and inventing one would hide notes the user last saw.
+    migrated.insert(QStringLiteral("openFolder"), QString());
+    migrated.insert(QStringLiteral("version"), kIndexVersion);
+    return migrated;
+}
+
 /** Indices of one longest strictly increasing subsequence of `values`.
  *
  * Used to pick the catalog rows that may stay where they are when a rename changes one
@@ -292,10 +345,11 @@ bool DocumentCollection::prepareLibrary(const QString &folder, PendingLibrary *p
         return false;
     }
 
-    QJsonObject stored{{QStringLiteral("version"), 1},
+    QJsonObject stored{{QStringLiteral("version"), kIndexVersion},
                        {QStringLiteral("root"), canonical},
                        {QStringLiteral("documents"), QJsonObject{}},
-                       {QStringLiteral("fan"), QJsonArray{}}};
+                       {QStringLiteral("folderOrder"), QJsonObject{}},
+                       {QStringLiteral("openFolder"), QString()}};
     QFile index(QDir(state).filePath(QStringLiteral("index.json")));
     if (index.exists()) {
         if (!index.open(QIODevice::ReadOnly) || index.size() > 4 * 1024 * 1024) {
@@ -304,14 +358,22 @@ bool DocumentCollection::prepareLibrary(const QString &folder, PendingLibrary *p
         }
         QJsonParseError parseError {};
         const QJsonDocument parsed = QJsonDocument::fromJson(index.readAll(), &parseError);
+        const int version = parsed.isObject()
+            ? parsed.object().value(QStringLiteral("version")).toInt()
+            : 0;
         if (parseError.error != QJsonParseError::NoError || !parsed.isObject()
-            || parsed.object().value(QStringLiteral("version")).toInt() != 1
+            || version < 1 || version > kIndexVersion
             || parsed.object().value(QStringLiteral("root")).toString() != canonical) {
             // A damaged index must never cost the user their Markdown, so the library
-            // still opens; it simply re-discovers everything with fresh IDs.
+            // still opens; it simply re-discovers everything with fresh IDs. A version
+            // from the FUTURE is refused the same way rather than reinterpreted: this
+            // build cannot know what a later schema means.
             setError(QStringLiteral("Invalid or mismatched XDG document index; Markdown was left untouched"));
         } else {
-            stored = parsed.object();
+            // A pre-0.2.0 index carries a flat `fan`; migrate it here, where the previous
+            // library is still untouched and a failure costs nothing.
+            stored = version < kIndexVersion ? migrateIndexToVersion2(parsed.object())
+                                             : parsed.object();
         }
     }
 
@@ -339,14 +401,30 @@ void DocumentCollection::adoptLibrary(PendingLibrary &&pending)
     for (auto it = documents.begin(); it != documents.end(); ++it) {
         applyMetadata(ensureDocument(it.key(), false), it.value().toObject());
     }
-    for (const QJsonValue &value : m_metadata.value(QStringLiteral("fan")).toArray()) {
-        const QString id = value.toString();
-        Document *document = m_documents.value(id);
-        if (document && !m_fan.contains(id)) {
-            document->m_inFan = true;
-            m_fan.append(id);
+    const QJsonObject orders = m_metadata.value(QStringLiteral("folderOrder")).toObject();
+    for (auto it = orders.begin(); it != orders.end(); ++it) {
+        QStringList ids;
+        for (const QJsonValue &value : it.value().toArray()) {
+            const QString id = value.toString();
+            // Only ids this library actually knows: a hand-edited or synced index must
+            // not be able to inject phantom entries into a folder's order.
+            if (!id.isEmpty() && m_documents.contains(id) && !ids.contains(id)) {
+                ids.append(id);
+            }
+        }
+        if (!ids.isEmpty()) {
+            m_folderOrder.insert(normalizedFolder(it.key()), ids);
         }
     }
+    // The open folder is restored, but only if it still exists on disk. A folder the user
+    // has since deleted or moved must fall back to the root rather than leaving the fan
+    // empty with no visible reason and no way back.
+    const QString wanted = normalizedFolder(m_metadata.value(QStringLiteral("openFolder")).toString());
+    m_openFolder = (!wanted.isEmpty()
+                    && (!confinedRelative(wanted) || isArchivedPath(wanted)
+                        || !QFileInfo(absoluteFor(wanted)).isDir()))
+        ? QString()
+        : wanted;
 
     // First discovery of a library is a genuine reset, so it is the one place that uses
     // one; every later reconciliation is incremental.
@@ -361,6 +439,7 @@ void DocumentCollection::adoptLibrary(PendingLibrary &&pending)
         settings.setValue(QStringLiteral("library/root"), m_rootPath);
     }
     emit rootChanged();
+    emit openFolderChanged();
     emit fanChanged();
 }
 
@@ -383,6 +462,8 @@ void DocumentCollection::teardownLibrary()
     m_saveTimers.clear();
     m_catalog.clear();
     m_fan.clear();
+    m_folderOrder.clear();
+    m_openFolder.clear();
     m_recoveryApplied.clear();
     endResetModel();
 
@@ -401,6 +482,7 @@ void DocumentCollection::closeRoot()
     flushPendingSaves();
     teardownLibrary();
     emit rootChanged();
+    emit openFolderChanged();
     emit documentsChanged();
     emit fanChanged();
 }
@@ -572,6 +654,9 @@ void DocumentCollection::reconcileNow()
         setError({});
     }
     m_reconciling = false;
+    // Membership is derived, so a reconcile that discovered, lost, archived or restored
+    // anything can change the fan — and must never do so by a side effect somewhere else.
+    rebuildFan();
     if (rowsChanged || !newlyAdded.isEmpty()) {
         emit documentsChanged();
     }
@@ -757,7 +842,9 @@ bool DocumentCollection::archive(const QString &id)
                         true, original)) {
         return false;
     }
-    leaveFan(id);
+    // "Archived means not on the edge" in every folder: moveInsideRoot has already changed
+    // the note's folder to Archive/..., so the derivation drops it on its own.
+    rebuildFan();
     return true;
 }
 
@@ -810,7 +897,7 @@ bool DocumentCollection::moveToTrash(const QString &id)
     document->m_saveError = pathInTrash.isEmpty()
         ? QStringLiteral("Moved to desktop Trash, but this platform did not expose a restorable path")
         : QString();
-    leaveFan(id);
+    rebuildFan();
     markMetadataDirty();
     persistMetadata();
     refreshWatches();
@@ -857,37 +944,104 @@ bool DocumentCollection::restoreFromTrash(const QString &id)
     return true;
 }
 
-bool DocumentCollection::joinFan(const QString &id)
+QString DocumentCollection::normalizedFolder(const QString &folder)
 {
-    Document *document = m_documents.value(id);
-    if (!document || document->m_trashed || document->m_archived) {
-        setError(QStringLiteral("Only an available, unarchived note can join the fan"));
-        return false;
+    const QString clean = QDir::cleanPath(folder.trimmed());
+    if (clean.isEmpty() || clean == QStringLiteral(".") || clean == QStringLiteral("/")) {
+        return {};
     }
-    if (m_fan.contains(id)) {
-        return true;
-    }
-    m_fan.append(id);
-    document->m_inFan = true;
-    markMetadataDirty();
-    const bool ok = persistMetadata();
-    emitDocumentChanged(document);
-    emit fanChanged();
-    return ok;
+    return clean;
 }
 
-bool DocumentCollection::leaveFan(const QString &id)
+/** The whole membership rule, in one place.
+ *
+ * `on the fan = in the open folder AND NOT (archived | trashed | pinned)`, plus the ghost
+ * rule the shell has always applied: a note whose file has gone AND which holds no
+ * unsaved buffer has nothing to render, while a missing DIRTY note stays — dropping it
+ * would be the one way to actually lose the user's work.
+ */
+bool DocumentCollection::belongsOnFan(const Document *document) const
 {
-    if (!m_fan.removeOne(id)) {
+    if (!document || document->m_trashed || document->m_archived || document->m_pinned) {
         return false;
     }
-    if (Document *document = m_documents.value(id)) {
-        document->m_inFan = false;
-        emitDocumentChanged(document);
+    if (document->m_missing && !document->m_dirty) {
+        return false;
     }
+    return document->folder() == m_openFolder;
+}
+
+/** Re-derive the fan from the open folder. The ONE place m_fan is ever assigned.
+ *
+ * Order comes from this folder's persisted arrangement; anything the arrangement does not
+ * mention is appended in catalog (path) order, so a newly discovered note lands
+ * predictably at the end rather than somewhere arbitrary.
+ */
+bool DocumentCollection::rebuildFan()
+{
+    QStringList next;
+    const QStringList arranged = m_folderOrder.value(m_openFolder);
+    for (const QString &id : arranged) {
+        if (belongsOnFan(m_documents.value(id)) && !next.contains(id)) {
+            next.append(id);
+        }
+    }
+    for (const QString &id : std::as_const(m_catalog)) {
+        if (belongsOnFan(m_documents.value(id)) && !next.contains(id)) {
+            next.append(id);
+        }
+    }
+    if (next == m_fan) {
+        return false;
+    }
+
+    // Documents whose membership actually flipped are the only ones that need to tell the
+    // UI about it; re-emitting for the whole fan on every reconcile is the churn the
+    // engine's "no signals when nothing changed" contract exists to prevent.
+    const QSet<QString> before(m_fan.cbegin(), m_fan.cend());
+    const QSet<QString> after(next.cbegin(), next.cend());
+    m_fan = next;
+    QSet<QString> touched = before;
+    touched.unite(after);
+    for (const QString &id : std::as_const(touched)) {
+        if (before.contains(id) == after.contains(id)) {
+            continue;
+        }
+        if (Document *document = m_documents.value(id)) {
+            document->m_inFan = after.contains(id);
+            emitDocumentChanged(document);
+        }
+    }
+    emit fanChanged();
+    return true;
+}
+
+bool DocumentCollection::setOpenFolder(const QString &folder)
+{
+    if (!m_open) {
+        setError(QStringLiteral("No notes folder is open"));
+        return false;
+    }
+    const QString wanted = normalizedFolder(folder);
+    if (!wanted.isEmpty() && (!confinedRelative(wanted) || isArchivedPath(wanted))) {
+        setError(QStringLiteral("That folder is outside the selected root or reserved for Archive"));
+        return false;
+    }
+    // An EMPTY folder is a legitimate scope — the fan is simply empty and the + still
+    // creates there. A folder that is not on disk is not: scoping to it would show
+    // nothing for a reason the user cannot see.
+    if (!wanted.isEmpty() && !QFileInfo(absoluteFor(wanted)).isDir()) {
+        setError(QStringLiteral("That folder no longer exists"));
+        return false;
+    }
+    if (wanted == m_openFolder) {
+        return true;
+    }
+    m_openFolder = wanted;
     markMetadataDirty();
     const bool ok = persistMetadata();
-    emit fanChanged();
+    emit openFolderChanged();
+    rebuildFan();
     return ok;
 }
 
@@ -899,14 +1053,27 @@ bool DocumentCollection::setFanOrder(const QStringList &ids)
             next.append(id);
         }
     }
+    // The guard is scoped to the OPEN FOLDER's fan, not to the whole library: under
+    // folder scoping a drag can only ever rearrange the notes currently on the edge.
     if (next.size() != m_fan.size()) {
-        setError(QStringLiteral("Fan order must be a permutation of the current fan"));
+        setError(QStringLiteral("Fan order must be a permutation of the open folder's fan"));
         return false;
     }
     if (next == m_fan) {
         return true;
     }
     m_fan = next;
+
+    // Persisted per-folder order keeps the ids it already held that are NOT on the fan
+    // right now (archived, pinned, or momentarily missing), so unpinning or restoring a
+    // note returns it to the slot the user gave it rather than to the end.
+    QStringList stored = next;
+    for (const QString &id : m_folderOrder.value(m_openFolder)) {
+        if (!stored.contains(id) && m_documents.contains(id)) {
+            stored.append(id);
+        }
+    }
+    m_folderOrder.insert(m_openFolder, stored);
     markMetadataDirty();
     const bool ok = persistMetadata();
     emit fanChanged();
@@ -923,6 +1090,9 @@ bool DocumentCollection::setPinned(const QString &id, bool pinned)
     markMetadataDirty();
     const bool ok = persistMetadata();
     emitDocumentChanged(document);
+    // Pin removes the note from the fan while pinned; unpin returns it to the slot this
+    // folder's persisted order still holds for it.
+    rebuildFan();
     return ok;
 }
 
@@ -1396,9 +1566,11 @@ bool DocumentCollection::persistMetadata()
     for (auto it = m_documents.cbegin(); it != m_documents.cend(); ++it) {
         documents.insert(it.key(), metadataFor(it.value()));
     }
-    m_metadata = QJsonObject{{QStringLiteral("version"), 1}, {QStringLiteral("root"), m_rootPath},
+    m_metadata = QJsonObject{{QStringLiteral("version"), kIndexVersion},
+                             {QStringLiteral("root"), m_rootPath},
                              {QStringLiteral("documents"), documents},
-                             {QStringLiteral("fan"), QJsonArray::fromStringList(m_fan)}};
+                             {QStringLiteral("folderOrder"), storedFolderOrder()},
+                             {QStringLiteral("openFolder"), m_openFolder}};
     const QByteArray bytes = QJsonDocument(m_metadata).toJson();
     QSaveFile file(indexPath());
     file.setDirectWriteFallback(false);
@@ -1408,6 +1580,30 @@ bool DocumentCollection::persistMetadata()
     }
     m_metadataDirty = false;
     return true;
+}
+
+/** The per-folder order as JSON, pruned to ids the library still holds.
+ *
+ * Written with folder keys sorted so two runs that changed nothing produce byte-identical
+ * files — the "no churn" contract covers this index, not just the model signals.
+ */
+QJsonObject DocumentCollection::storedFolderOrder() const
+{
+    QStringList folders = m_folderOrder.keys();
+    std::sort(folders.begin(), folders.end());
+    QJsonObject out;
+    for (const QString &folder : std::as_const(folders)) {
+        QJsonArray ids;
+        for (const QString &id : m_folderOrder.value(folder)) {
+            if (m_documents.contains(id)) {
+                ids.append(id);
+            }
+        }
+        if (!ids.isEmpty()) {
+            out.insert(folder, ids);
+        }
+    }
+    return out;
 }
 
 QJsonObject DocumentCollection::metadataFor(const Document *document) const
@@ -1656,5 +1852,8 @@ bool DocumentCollection::moveInsideRoot(Document *document, QString targetRelati
     persistMetadata();
     refreshWatches();
     emitDocumentChanged(document);
+    // A move can change the note's FOLDER (archive, restore, rename into place), which is
+    // exactly what fan membership is derived from.
+    rebuildFan();
     return true;
 }

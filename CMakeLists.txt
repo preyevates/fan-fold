@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(FanFold VERSION 0.1.0 LANGUAGES CXX)
+project(FanFold VERSION 0.2.0 LANGUAGES CXX)
 
 # The revision a package actually carries (e.g. "0.1.0+r42.20260922…"), supplied by the
 # packaging scripts. Without it a source build reports the project version, so the About

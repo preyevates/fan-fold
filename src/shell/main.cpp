@@ -511,15 +511,9 @@ public:
         if (!m_collection->openRoot(path)) {
             return m_collection->lastError();
         }
-        // Same discovery-to-fan rule as startup: every live note joins, pinned ones stay
-        // in their windows.
-        for (const QString &id : m_collection->catalogIds()) {
-            const Document *document = m_collection->document(id);
-            if (document && !document->archived() && !document->trashed()
-                && !document->pinned() && !document->inFan()) {
-                m_collection->joinFan(id);
-            }
-        }
+        // NOTHING joins the fan here. Fan membership is derived from the open folder, and
+        // openRoot() has already set that (root for a library with no stored scope), so
+        // the fan is correct the moment the library is open.
         QSettings settings;
         settings.setValue(QStringLiteral("library/root"), m_collection->rootPath());
         emit rootChanged();
@@ -661,20 +655,14 @@ int main(int argc, char **argv)
         settings.setValue(QStringLiteral("library/root"), collection.rootPath());
     }
 
-    // Every discovered note joins the fan, EXCEPT one already pinned to its own window.
-    // The deck is the whole working set, and a library that discovered notes but showed
-    // an empty fan would read as data loss. A pinned note is deliberately not in the fan:
-    // it is already on screen in its own window, and putting it in both would present the
-    // same note twice. Main.qml::restorePersistedPins() opens those windows at startup.
-    if (collection.isOpen()) {
-        for (const QString &id : collection.catalogIds()) {
-            const Document *document = collection.document(id);
-            if (document && !document->archived() && !document->trashed() && !document->pinned()
-                && !document->inFan()) {
-                collection.joinFan(id);
-            }
-        }
-    }
+    // No discovery-to-fan loop. Since 0.2.0 the fan is the OPEN FOLDER's notes, derived by
+    // the engine: openRoot() restored the persisted folder (or fell back to the root) and
+    // built the fan from it. The old loop here is precisely what put 62 tabs on the edge
+    // after an agent wrote 61 files into one subfolder.
+    //
+    // A pinned note is still off the fan — it is already on screen in its own window, and
+    // putting it in both would present the same note twice.
+    // Main.qml::restorePersistedPins() opens those windows at startup.
 
     AppearanceSettings appearanceSettings;
     AppearanceAdapter appearance(&appearanceSettings);
@@ -706,8 +694,12 @@ int main(int argc, char **argv)
     context->setContextProperty(QStringLiteral("libraryModel"), &library);
     // First-run empty state: the library opened but holds no notes, or no folder has been
     // chosen at all. An empty library used to render an essentially invisible window.
+    //
+    // Bound to the CATALOG, not the fan. The fan is now one folder's worth of notes, so an
+    // empty fan is an ordinary state (an empty folder, or every note pinned) and must not
+    // be reported as a first run over a library full of notes.
     context->setContextProperty(QStringLiteral("libraryEmpty"),
-                                collection.fanIds().isEmpty());
+                                collection.catalogIds().isEmpty());
     context->setContextProperty(QStringLiteral("libraryRoot"), collection.rootPath());
     context->setContextProperty(QStringLiteral("startupError"), startupError);
     context->setContextProperty(QStringLiteral("webAssetRoot"), QUrl::fromLocalFile(root));

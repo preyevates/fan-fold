@@ -20,9 +20,10 @@ class DocumentCollection;
  *
  * Note identity: document ids are opaque on both sides and pass through unchanged.
  *
- * Scope: this adapter exposes the FAN working set (`DocumentCollection::fanIds()`), not
- * the whole catalog. That is what the fan renders, and it is what keeps a large library
- * from turning into an unusable hundred-stick deck.
+ * Scope: this adapter exposes the FAN (`DocumentCollection::fanIds()`), which since 0.2.0
+ * is the notes of the currently OPEN FOLDER — not the whole catalog. That is what the fan
+ * renders, and it is what keeps a large library from turning into an unusable
+ * hundred-stick deck.
  */
 class NotesAdapter final : public QObject
 {
@@ -58,8 +59,12 @@ public:
      *  reopens on the same palette. */
     Q_INVOKABLE QVariantMap setPalette(const QString &key);
 
-    /** Persist a fan order. The value must be a permutation of the current fan ids. */
+    /** Persist the OPEN FOLDER's tab order. Must be a permutation of the current fan. */
     Q_INVOKABLE QVariantMap setOrder(const QStringList &ids);
+
+    /** Scope the fan to `folder` (root-relative; empty is the library root).
+     *  @return a fresh load() on success, or a failure map carrying the engine's refusal. */
+    Q_INVOKABLE QVariantMap openFolder(const QString &folder);
 
     /** The selected palette key; used by the appearance adapter's warning text. */
     QString paletteKey() const { return m_palette; }
@@ -80,6 +85,9 @@ private:
      * kept, because that buffer is the user's work.
      */
     QStringList visibleFanIds() const;
+
+    /** Live notes in the open folder, direct children only; pinned ones count. */
+    int openFolderCount() const;
 
     DocumentCollection *m_collection = nullptr;
     QString m_palette;

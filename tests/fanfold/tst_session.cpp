@@ -60,9 +60,9 @@ private slots:
     void cacheStaysBoundedAndEvictsTheLeastRecentlyUsedFreeSlot();
     void anOwnedEditorIsNeverEvictedFromUnderItsWindow();
     void acquiringAnOwnedDocumentHandsTheOneEditorOverExplicitly();
-    void createsUniqueNotesInTheRootThatJoinTheFanAndTakeFocus();
-    void libraryNewNoteLandsInTheCurrentFolder();
-    void openingFromTheLibraryJoinsTheFanAndFocuses();
+    void createsUniqueNotesInTheRootThatFanAndTakeFocus();
+    void libraryNewNoteLandsInTheCurrentFolderAndScopesTheFanThere();
+    void openingFromTheLibraryScopesTheFanToThatNotesFolder();
     void findCurrentNoteRevealsItInTheLibraryTree();
     void pinnedWindowsAreOrdinaryAndClosingOneReturnsTheNoteToTheFan();
     void persistedPinsRecreateTheSessionWindowRegisterAfterRestart();
@@ -152,7 +152,7 @@ void SessionTest::acquiringAnOwnedDocumentHandsTheOneEditorOverExplicitly()
     QCOMPARE(leases.residentCount(), 1);
 }
 
-void SessionTest::createsUniqueNotesInTheRootThatJoinTheFanAndTakeFocus()
+void SessionTest::createsUniqueNotesInTheRootThatFanAndTakeFocus()
 {
     Fixture f;
     auto &session = f.open();
@@ -170,11 +170,16 @@ void SessionTest::createsUniqueNotesInTheRootThatJoinTheFanAndTakeFocus()
     const QString second = session.createNoteInRoot();
     QVERIFY(second != first);
     QCOMPARE(f.collection->document(second)->relativePath(), QStringLiteral("Untitled 2.md"));
-    QCOMPARE(f.collection->fanIds(), (QStringList{first, second}));
+    // A folder the user has never arranged falls back to CATALOG order, which is the same
+    // order the Library lists — "Untitled 2.md" sorts before "Untitled.md" because a space
+    // precedes a dot. Once a drag has given the folder an arrangement, that arrangement
+    // leads and newly discovered notes append after it; perFolderOrderSurvives... covers
+    // that path in the engine suite.
+    QCOMPARE(f.collection->fanIds(), (QStringList{second, first}));
     QCOMPARE(focus.count(), 2);
 }
 
-void SessionTest::libraryNewNoteLandsInTheCurrentFolder()
+void SessionTest::libraryNewNoteLandsInTheCurrentFolderAndScopesTheFanThere()
 {
     Fixture f;
     writeBytes(f.notes.filePath("Work/Plan.md"), "p\n");
@@ -185,21 +190,31 @@ void SessionTest::libraryNewNoteLandsInTheCurrentFolder()
     const QString created = session.createNoteInLibraryFolder();
     QVERIFY(!created.isEmpty());
     QCOMPARE(f.collection->document(created)->relativePath(), QStringLiteral("Work/Untitled.md"));
+    // "Whatever folder is open, that's where the note goes" — and creating into a folder
+    // MOVES the scope, or the new note would be created somewhere nobody can see it.
+    QCOMPARE(f.collection->openFolder(), QStringLiteral("Work"));
     QVERIFY(f.collection->isInFan(created));
     QCOMPARE(session.currentDocumentId(), created);
 }
 
-void SessionTest::openingFromTheLibraryJoinsTheFanAndFocuses()
+void SessionTest::openingFromTheLibraryScopesTheFanToThatNotesFolder()
 {
     Fixture f;
+    writeBytes(f.notes.filePath("Root.md"), "r\n");
     writeBytes(f.notes.filePath("Work/Plan.md"), "p\n");
     auto &session = f.open();
     const QString id = f.collection->idForRelativePath(QStringLiteral("Work/Plan.md"));
+    // The root is open, so a note inside Work is NOT on the fan yet.
+    QCOMPARE(f.collection->openFolder(), QString());
     QVERIFY(!f.collection->isInFan(id));
 
     QSignalSpy focus(&session, &SessionController::focusEditorRequested);
     QVERIFY(session.openFromLibrary(id));
+    // Opening it is the same gesture as opening its folder: the scope moves, and the
+    // derivation puts it on the fan. The root's note leaves with the scope.
+    QCOMPARE(f.collection->openFolder(), QStringLiteral("Work"));
     QVERIFY(f.collection->isInFan(id));
+    QVERIFY(!f.collection->isInFan(f.collection->idForRelativePath(QStringLiteral("Root.md"))));
     QCOMPARE(session.currentDocumentId(), id);
     QCOMPARE(focus.count(), 1);
 }

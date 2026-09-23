@@ -2,6 +2,9 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QSaveFile>
 #include <QSignalSpy>
 #include <QTemporaryDir>
@@ -96,7 +99,15 @@ private slots:
     // collision-safe restore, file stat fields, quiet-period precision, and
     // reconciliation that stays silent when nothing actually changed.
     void catalogOrderIsIndependentOfThePersistedFanOrder();
-    void fanWorkingSetPersistsAndReleasesArchivedOrTrashedNotes();
+    void fanReleasesArchivedTrashedAndPinnedNotes();
+
+    // 0.2.0 folder-scoped fan: membership derived from the open folder, order kept per
+    // folder, the open folder itself persisted, and a pre-0.2.0 index migrated.
+    void fanIsTheOpenFoldersDirectChildrenAndNeverTheSubtree();
+    void filesArrivingOutsideTheOpenFolderNeverReachTheFan();
+    void perFolderOrderSurvivesAScopeChangeAndARestart();
+    void theOpenFolderIsRestoredAndFallsBackToTheRootWhenItIsGone();
+    void aPreZeroTwoIndexMigratesWithoutLosingANote();
     void failedRootSwitchLeavesThePreviousLibraryIntact();
     void successfulRootSwitchFlushesPendingSavesFirst();
     void archiveRestoreFallsBackToAUniqueNameInTheOriginalFolder();
@@ -428,52 +439,270 @@ void DocumentCollectionTest::catalogOrderIsIndependentOfThePersistedFanOrder()
 
         // The catalog is every discovered note, ordered by path and never by the fan.
         QCOMPARE(collection.catalogIds(), (QStringList{alpha, beta, gamma}));
-        QVERIFY(collection.fanIds().isEmpty());
 
-        // The fan is an explicit working set with its own order.
-        QVERIFY(collection.joinFan(gamma));
-        QVERIFY(collection.joinFan(alpha));
-        QCOMPARE(collection.fanIds(), (QStringList{gamma, alpha}));
-        QVERIFY(collection.joinFan(alpha)); // idempotent
-        QCOMPARE(collection.fanIds(), (QStringList{gamma, alpha}));
-        QVERIFY(collection.setFanOrder({alpha, gamma}));
-        QCOMPARE(collection.fanIds(), (QStringList{alpha, gamma}));
+        // The fan is the OPEN FOLDER's notes, which on a fresh library is the root: the
+        // two root notes are there and the nested one is not, without anyone asking.
+        QCOMPARE(collection.openFolder(), QString());
+        QCOMPARE(collection.fanIds(), (QStringList{alpha, beta}));
         QVERIFY(collection.isInFan(alpha));
-        QVERIFY(!collection.isInFan(beta));
+        QVERIFY(!collection.isInFan(gamma));
+
+        // Arrangement is the user's, and it does not disturb the catalog.
+        QVERIFY(collection.setFanOrder({beta, alpha}));
+        QCOMPARE(collection.fanIds(), (QStringList{beta, alpha}));
         QCOMPARE(collection.catalogIds(), (QStringList{alpha, beta, gamma}));
     }
 
     DocumentCollection reopened(f.state.path());
     QVERIFY(reopened.openRoot(f.notes.path()));
-    QCOMPARE(reopened.fanIds(), (QStringList{alpha, gamma}));
+    QCOMPARE(reopened.fanIds(), (QStringList{beta, alpha}));
     QCOMPARE(reopened.catalogIds(), (QStringList{alpha, beta, gamma}));
 }
 
-void DocumentCollectionTest::fanWorkingSetPersistsAndReleasesArchivedOrTrashedNotes()
+void DocumentCollectionTest::fanReleasesArchivedTrashedAndPinnedNotes()
 {
     Fixture f;
     writeBytes(f.notes.filePath("Keep.md"), "k\n");
     writeBytes(f.notes.filePath("Filed.md"), "f\n");
     writeBytes(f.notes.filePath("Gone.md"), "g\n");
+    writeBytes(f.notes.filePath("Pinned.md"), "p\n");
     auto &collection = f.collection();
     const QString keep = collection.idForRelativePath("Keep.md");
     const QString filed = collection.idForRelativePath("Filed.md");
     const QString gone = collection.idForRelativePath("Gone.md");
+    const QString pinned = collection.idForRelativePath("Pinned.md");
+    QCOMPARE(collection.fanIds().size(), 4);
 
-    QVERIFY(collection.joinFan(keep));
-    QVERIFY(collection.joinFan(filed));
-    QVERIFY(collection.joinFan(gone));
-    QCOMPARE(collection.fanIds().size(), 3);
-
+    // Archive, trash and pin are the three exclusions from the derivation, and each one
+    // must take the note off the edge on its own.
     QVERIFY(collection.archive(filed));
     QVERIFY(!collection.isInFan(filed));
     QVERIFY(collection.moveToTrash(gone));
     QVERIFY(!collection.isInFan(gone));
+    QVERIFY(collection.setPinned(pinned, true));
+    QVERIFY(!collection.isInFan(pinned));
     QCOMPARE(collection.fanIds(), (QStringList{keep}));
 
     // Archived notes remain in the catalog; they simply left the fan.
     QVERIFY(collection.document(filed)->archived());
     QVERIFY(collection.catalogIds().contains(filed));
+
+    // Unpinning returns the note without anyone re-joining it.
+    QVERIFY(collection.setPinned(pinned, false));
+    QVERIFY(collection.isInFan(pinned));
+}
+
+void DocumentCollectionTest::fanIsTheOpenFoldersDirectChildrenAndNeverTheSubtree()
+{
+    Fixture f;
+    writeBytes(f.notes.filePath("Root.md"), "r\n");
+    writeBytes(f.notes.filePath("Work/Plan.md"), "p\n");
+    writeBytes(f.notes.filePath("Work/Agenda.md"), "a\n");
+    writeBytes(f.notes.filePath("Work/Deep/Detail.md"), "d\n");
+    auto &collection = f.collection();
+    const QString root = collection.idForRelativePath("Root.md");
+    const QString agenda = collection.idForRelativePath("Work/Agenda.md");
+    const QString plan = collection.idForRelativePath("Work/Plan.md");
+    const QString detail = collection.idForRelativePath("Work/Deep/Detail.md");
+
+    QCOMPARE(collection.fanIds(), (QStringList{root}));
+
+    QVERIFY2(collection.setOpenFolder(QStringLiteral("Work")), qPrintable(collection.lastError()));
+    // DIRECT children only. Including the subtree is what recreates the 62-tab flood a
+    // deep tree would otherwise reproduce exactly.
+    QCOMPARE(collection.fanIds(), (QStringList{agenda, plan}));
+    QVERIFY(!collection.fanIds().contains(detail));
+
+    QVERIFY(collection.setOpenFolder(QStringLiteral("Work/Deep")));
+    QCOMPARE(collection.fanIds(), (QStringList{detail}));
+
+    // Back to the root: the root's own notes, not everything.
+    QVERIFY(collection.setOpenFolder(QString()));
+    QCOMPARE(collection.fanIds(), (QStringList{root}));
+
+    // An EMPTY folder is a legitimate scope — empty fan, no refusal. A folder that is
+    // not on disk is refused, and the previous scope survives the refusal intact.
+    QVERIFY(QDir().mkpath(f.notes.filePath("Empty")));
+    QVERIFY2(collection.setOpenFolder(QStringLiteral("Empty")), qPrintable(collection.lastError()));
+    QVERIFY(collection.fanIds().isEmpty());
+    QVERIFY(!collection.setOpenFolder(QStringLiteral("No/Such/Folder")));
+    QCOMPARE(collection.openFolder(), QStringLiteral("Empty"));
+    // Archive is never a fan scope, whatever the caller asks for.
+    QVERIFY(collection.archive(root));
+    QVERIFY(!collection.setOpenFolder(QStringLiteral("Archive")));
+    QCOMPARE(collection.openFolder(), QStringLiteral("Empty"));
+}
+
+void DocumentCollectionTest::filesArrivingOutsideTheOpenFolderNeverReachTheFan()
+{
+    Fixture f;
+    writeBytes(f.notes.filePath("Root.md"), "r\n");
+    QVERIFY(QDir().mkpath(f.notes.filePath("Dump")));
+    auto &collection = f.collection();
+    const QString root = collection.idForRelativePath("Root.md");
+    QCOMPARE(collection.fanIds(), (QStringList{root}));
+
+    // The exact shape of the incident that produced this release: an agent writes a pile
+    // of files into a subfolder while the user is looking at the root.
+    for (int i = 0; i < 61; ++i) {
+        writeBytes(f.notes.filePath(QStringLiteral("Dump/Note %1.md").arg(i, 3, 10, QLatin1Char('0'))),
+                   "x\n");
+    }
+    collection.reconcileNow();
+
+    // The LIBRARY sees all 62; the fan is untouched.
+    QCOMPARE(collection.catalogIds().size(), 62);
+    QCOMPARE(collection.fanIds(), (QStringList{root}));
+
+    // ...and they are all there the moment that folder is opened.
+    QVERIFY(collection.setOpenFolder(QStringLiteral("Dump")));
+    QCOMPARE(collection.fanIds().size(), 61);
+
+    // A note created in the open folder appears on the fan with no join step.
+    const QString created = collection.createNote(QStringLiteral("Dump"));
+    QVERIFY(!created.isEmpty());
+    QVERIFY(collection.isInFan(created));
+    QCOMPARE(collection.fanIds().size(), 62);
+
+    // One created ELSEWHERE joins the catalog and nothing else.
+    const QString elsewhere = collection.createNote(QString());
+    QVERIFY(!elsewhere.isEmpty());
+    QVERIFY(!collection.isInFan(elsewhere));
+    QVERIFY(collection.catalogIds().contains(elsewhere));
+}
+
+void DocumentCollectionTest::perFolderOrderSurvivesAScopeChangeAndARestart()
+{
+    Fixture f;
+    writeBytes(f.notes.filePath("A/One.md"), "1\n");
+    writeBytes(f.notes.filePath("A/Two.md"), "2\n");
+    writeBytes(f.notes.filePath("A/Three.md"), "3\n");
+    writeBytes(f.notes.filePath("B/Four.md"), "4\n");
+    writeBytes(f.notes.filePath("B/Five.md"), "5\n");
+
+    QString one;
+    QString two;
+    QString three;
+    QString four;
+    QString five;
+    {
+        auto &collection = f.collection();
+        one = collection.idForRelativePath("A/One.md");
+        two = collection.idForRelativePath("A/Two.md");
+        three = collection.idForRelativePath("A/Three.md");
+        four = collection.idForRelativePath("B/Four.md");
+        five = collection.idForRelativePath("B/Five.md");
+
+        QVERIFY(collection.setOpenFolder(QStringLiteral("A")));
+        QCOMPARE(collection.fanIds(), (QStringList{one, three, two})); // catalog order
+        QVERIFY2(collection.setFanOrder({two, one, three}), qPrintable(collection.lastError()));
+
+        // A reorder is scoped: a permutation naming a note from ANOTHER folder is not a
+        // permutation of this fan and must be refused rather than silently absorbed.
+        QVERIFY(!collection.setFanOrder({two, one, four}));
+        QCOMPARE(collection.fanIds(), (QStringList{two, one, three}));
+
+        QVERIFY(collection.setOpenFolder(QStringLiteral("B")));
+        QCOMPARE(collection.fanIds(), (QStringList{five, four}));
+        QVERIFY(collection.setFanOrder({four, five}));
+
+        // Back to A: its own arrangement, not B's and not the catalog's.
+        QVERIFY(collection.setOpenFolder(QStringLiteral("A")));
+        QCOMPARE(collection.fanIds(), (QStringList{two, one, three}));
+    }
+
+    DocumentCollection reopened(f.state.path());
+    QVERIFY(reopened.openRoot(f.notes.path()));
+    QCOMPARE(reopened.openFolder(), QStringLiteral("A"));
+    QCOMPARE(reopened.fanIds(), (QStringList{two, one, three}));
+    QVERIFY(reopened.setOpenFolder(QStringLiteral("B")));
+    QCOMPARE(reopened.fanIds(), (QStringList{four, five}));
+}
+
+void DocumentCollectionTest::theOpenFolderIsRestoredAndFallsBackToTheRootWhenItIsGone()
+{
+    Fixture f;
+    writeBytes(f.notes.filePath("Root.md"), "r\n");
+    writeBytes(f.notes.filePath("Work/Plan.md"), "p\n");
+    {
+        auto &collection = f.collection();
+        QVERIFY(collection.setOpenFolder(QStringLiteral("Work")));
+    }
+
+    {
+        DocumentCollection reopened(f.state.path());
+        QVERIFY(reopened.openRoot(f.notes.path()));
+        QCOMPARE(reopened.openFolder(), QStringLiteral("Work"));
+    }
+
+    // The folder is gone by the next launch. Falling back to the root is what keeps the
+    // app out of an empty state with no visible cause and no way back.
+    QVERIFY(QFile::remove(f.notes.filePath("Work/Plan.md")));
+    QVERIFY(QDir(f.notes.filePath("Work")).removeRecursively());
+
+    DocumentCollection again(f.state.path());
+    QVERIFY(again.openRoot(f.notes.path()));
+    QCOMPARE(again.openFolder(), QString());
+    QCOMPARE(again.fanIds(), (QStringList{again.idForRelativePath("Root.md")}));
+}
+
+void DocumentCollectionTest::aPreZeroTwoIndexMigratesWithoutLosingANote()
+{
+    Fixture f;
+    writeBytes(f.notes.filePath("Root.md"), "r\n");
+    writeBytes(f.notes.filePath("Work/Plan.md"), "p\n");
+    writeBytes(f.notes.filePath("Work/Agenda.md"), "a\n");
+
+    QString root;
+    QString plan;
+    QString agenda;
+    QString indexFile;
+    {
+        auto &collection = f.collection();
+        root = collection.idForRelativePath("Root.md");
+        plan = collection.idForRelativePath("Work/Plan.md");
+        agenda = collection.idForRelativePath("Work/Agenda.md");
+        indexFile = collection.metadataPath();
+    }
+
+    // Rewrite the index as a genuine 0.1.0 one: version 1, a flat `fan` spanning both
+    // folders, in an order the user chose (Plan before Agenda, which is NOT catalog
+    // order) and with no folderOrder or openFolder keys at all.
+    QFile stored(indexFile);
+    QVERIFY(stored.open(QIODevice::ReadOnly));
+    QJsonObject index = QJsonDocument::fromJson(stored.readAll()).object();
+    stored.close();
+    index.remove(QStringLiteral("folderOrder"));
+    index.remove(QStringLiteral("openFolder"));
+    index.insert(QStringLiteral("version"), 1);
+    index.insert(QStringLiteral("fan"), QJsonArray{plan, root, agenda});
+    atomicReplace(indexFile, QJsonDocument(index).toJson());
+
+    DocumentCollection migrated(f.state.path());
+    QVERIFY2(migrated.openRoot(f.notes.path()), qPrintable(migrated.lastError()));
+
+    // No note is lost: the catalog still holds all three, with their ORIGINAL ids — a
+    // migration that rediscovered them would silently drop every note's colour and pin.
+    QCOMPARE(migrated.catalogIds().size(), 3);
+    QVERIFY(migrated.catalogIds().contains(root));
+    QVERIFY(migrated.catalogIds().contains(plan));
+    QVERIFY(migrated.catalogIds().contains(agenda));
+
+    // A migrated library opens at the root, and each folder's order is the old flat order
+    // filtered to it — so Plan still precedes Agenda inside Work.
+    QCOMPARE(migrated.openFolder(), QString());
+    QCOMPARE(migrated.fanIds(), (QStringList{root}));
+    QVERIFY(migrated.setOpenFolder(QStringLiteral("Work")));
+    QCOMPARE(migrated.fanIds(), (QStringList{plan, agenda}));
+
+    // The file on disk is now version 2 and carries the new keys.
+    QFile after(indexFile);
+    QVERIFY(after.open(QIODevice::ReadOnly));
+    const QJsonObject written = QJsonDocument::fromJson(after.readAll()).object();
+    QCOMPARE(written.value(QStringLiteral("version")).toInt(), 2);
+    QVERIFY(!written.contains(QStringLiteral("fan")));
+    QVERIFY(written.contains(QStringLiteral("folderOrder")));
+    QCOMPARE(written.value(QStringLiteral("openFolder")).toString(), QStringLiteral("Work"));
 }
 
 void DocumentCollectionTest::failedRootSwitchLeavesThePreviousLibraryIntact()
@@ -482,7 +711,7 @@ void DocumentCollectionTest::failedRootSwitchLeavesThePreviousLibraryIntact()
     writeBytes(f.notes.filePath("Alpha.md"), "alpha\n");
     auto &collection = f.collection();
     const QString id = collection.idForRelativePath("Alpha.md");
-    QVERIFY(collection.joinFan(id));
+    QVERIFY(collection.isInFan(id));   // derived: a root note with the root open
     QVERIFY(collection.updateContent(id, "unsaved\n"));
 
     QSignalSpy resets(&collection, &QAbstractItemModel::modelAboutToBeReset);
@@ -519,7 +748,10 @@ void DocumentCollectionTest::successfulRootSwitchFlushesPendingSavesFirst()
     QCOMPARE(collection.catalogIds().size(), 1);
     QVERIFY(!collection.idForRelativePath("Other.md").isEmpty());
     QVERIFY(collection.idForRelativePath("Alpha.md").isEmpty());
-    QVERIFY(collection.fanIds().isEmpty());
+    // The new library opens at its own root, so its root note is on the fan immediately.
+    // Nothing carries over from the previous library's scope or arrangement.
+    QCOMPARE(collection.openFolder(), QString());
+    QCOMPARE(collection.fanIds(), (QStringList{collection.idForRelativePath("Other.md")}));
 }
 
 void DocumentCollectionTest::archiveRestoreFallsBackToAUniqueNameInTheOriginalFolder()

@@ -26,29 +26,21 @@ NotesAdapter::NotesAdapter(DocumentCollection *collection, QObject *parent)
     // Relay the ENGINE's own reconcile into the shell. The engine watches the folder and
     // reconciles on its own, but this adapter emits changed() only from its own write
     // paths, so a .md file created OUTSIDE the app (another editor, a sync, a script)
-    // would reach the library and never the fan until a restart. "The files are the
+    // would reach the library and never the shell until a restart. "The files are the
     // source of truth" has to hold in both directions.
     //
-    // The engine deliberately does NOT put a discovered note in the fan — that is the
-    // shell's policy, applied once at startup in main.cpp. documentAdded fires per newly
-    // discovered id, so the SAME rule runs here for a note that appears while the app is
-    // running: not archived, not trashed, not pinned (a pinned note already has its own
-    // window and must not be shown twice).
+    // There is deliberately NO auto-join here any more. Fan membership is DERIVED by the
+    // engine from the open folder, so a discovered file joins the LIBRARY catalog always
+    // and the fan only when it landed in the folder the user is looking at. The previous
+    // hook joined every discovered note unconditionally, which is how 61 files written
+    // into one subfolder put 62 tabs on the edge.
     if (m_collection) {
-        connect(m_collection, &DocumentCollection::documentAdded, this,
-                [this](const QString &id) {
-                    const Document *document = m_collection->document(id);
-                    if (document && !document->archived() && !document->trashed()
-                        && !document->pinned() && !document->inFan()) {
-                        m_collection->joinFan(id);
-                    }
-                    // joinFan() changes the fan AFTER documentsChanged has already been
-                    // delivered for this reconcile (the engine emits documentsChanged
-                    // first, then documentAdded per new id), so the shell must be told
-                    // again or the deck keeps the membership it had a moment ago.
-                    emit changed();
-                });
         connect(m_collection, &DocumentCollection::documentsChanged,
+                this, &NotesAdapter::changed);
+        // The fan can change without the catalog changing at all: opening a folder,
+        // pinning, archiving. The shell must be told, or the deck keeps the membership it
+        // had a moment ago.
+        connect(m_collection, &DocumentCollection::fanChanged,
                 this, &NotesAdapter::changed);
     }
 }
@@ -74,17 +66,46 @@ QStringList NotesAdapter::visibleFanIds() const
         // GHOST: the engine keeps its record so a reappearing file is recognised, but
         // there is nothing to render and nothing the user can do with it. Drawing it
         // anyway produces a blank, unlabelled stick and, because the deck is then not
-        // empty, suppresses the first-run empty state on a library with no notes left
-        // in it.
+        // empty, suppresses the empty state on a folder with no notes left in it.
         //
         // A missing document that IS dirty stays: that buffer is the user's unsaved work
         // and dropping it from the fan would be the one way to actually lose it.
+        //
+        // The engine's derivation now applies the same rule, so this is a second, cheap
+        // guard rather than the only one — kept because the shell must never render a
+        // ghost even if the two ever disagree.
         if (document->missing() && !document->dirty()) {
             continue;
         }
         visible.append(id);
     }
     return visible;
+}
+
+/** How many live notes sit in the OPEN FOLDER.
+ *
+ * Direct children only. Pinned notes COUNT — a folder whose only note is open in a pinned
+ * window is not empty, and telling the user it has no notes yet would be a lie. Archived
+ * notes do not: they have left this folder for Archive/ and are shown there.
+ */
+int NotesAdapter::openFolderCount() const
+{
+    if (!m_collection) {
+        return 0;
+    }
+    const QString folder = m_collection->openFolder();
+    int total = 0;
+    const QStringList catalog = m_collection->documentIds();
+    for (const QString &id : catalog) {
+        const Document *document = m_collection->document(id);
+        if (!document || document->trashed() || document->missing() || document->archived()) {
+            continue;
+        }
+        if (document->folder() == folder) {
+            ++total;
+        }
+    }
+    return total;
 }
 
 QVariantMap NotesAdapter::colourOf(const QString &id) const
@@ -191,12 +212,19 @@ QVariantMap NotesAdapter::load()
             {QStringLiteral("order"), QVariant(ids)},
             // How many notes the LIBRARY holds, which is NOT the size of the fan.
             //
-            // The fan is a curated subset: archiving a note removes it from the fan, and
-            // so does pinning it to its own window. Binding the first-run empty state to
-            // the fan would therefore claim "This folder has no notes yet" while notes
-            // sit in Archive/ or open in a pinned window. The empty state must mean
-            // "there is nothing here", not "nothing is on the fan right now".
+            // Under folder scoping the fan is a window onto ONE folder, so it is smaller
+            // than the library by design. This count answers "is there anything in this
+            // library at all", which is the FIRST-RUN question, and must never be bound
+            // to the fan: doing so announces "no notes yet" over a library full of notes
+            // that simply live in another folder.
             {QStringLiteral("libraryCount"), m_collection ? int(m_collection->documentIds().size()) : 0},
+            // How many live notes are in the OPEN folder. This is the question the
+            // scoped empty state asks: an empty FOLDER inside a non-empty library needs
+            // a lighter panel than the first-run welcome.
+            {QStringLiteral("folderCount"), openFolderCount()},
+            // Root-relative open folder, empty for the library root. The shell shows it
+            // and offers the way back to the root.
+            {QStringLiteral("openFolder"), m_collection ? m_collection->openFolder() : QString()},
             {QStringLiteral("migrated"), false},
             {QStringLiteral("warning"), QString()}};
 }
@@ -261,6 +289,23 @@ QVariantMap NotesAdapter::setOrder(const QStringList &ids)
     }
     if (!m_collection->setFanOrder(ids)) {
         return failure(QStringLiteral("Order not saved; the library index is unwritable"));
+    }
+    emit changed();
+    return load();
+}
+
+QVariantMap NotesAdapter::openFolder(const QString &folder)
+{
+    if (!m_collection) {
+        return failure(QStringLiteral("No library is open"));
+    }
+    // Flush first. Scoping away from a folder takes the open card's note off the fan, and
+    // an unsaved buffer whose card is about to be replaced is how edits go missing.
+    m_collection->flushPendingSaves();
+    if (!m_collection->setOpenFolder(folder)) {
+        const QString refusal = m_collection->lastError();
+        return failure(refusal.isEmpty() ? QStringLiteral("That folder cannot be opened")
+                                         : refusal);
     }
     emit changed();
     return load();

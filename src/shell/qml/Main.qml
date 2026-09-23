@@ -187,13 +187,23 @@ PlasmaCore.Dialog {
      *  and conflicts still take this line and override the routine state, so nothing about
      *  a refusal is quiet. */
     property string saveStatus: "Saved"
-    /** True while the chosen folder holds no notes at all.
+    /** True while the whole LIBRARY holds no notes at all — the first-run question.
      *
-     *  Deliberately NOT `order.length === 0`. The fan is a curated SUBSET of the library —
-     *  archiving or pinning a note removes it — so binding the empty state to the fan
-     *  announces "no notes yet" over a library full of archived and pinned ones. */
+     *  Deliberately NOT `order.length === 0`. The fan is one FOLDER's notes, so an empty
+     *  fan is an ordinary state (an empty folder, or every note archived or pinned) and
+     *  binding the first-run welcome to it announces "no notes yet" over a full library. */
     readonly property bool libraryIsEmpty: (manifest.libraryCount !== undefined
                                             ? manifest.libraryCount : dialog.order.length) === 0
+    /** Root-relative folder the fan is a window onto; "" is the library root. */
+    property string openFolder: manifest.openFolder !== undefined ? manifest.openFolder : ""
+    /** Leaf name of the open folder, for the one line that has to say where you are. */
+    readonly property string openFolderLabel: dialog.openFolder === ""
+        ? (libraryRoot ? String(libraryRoot).split("/").pop() : "Notes")
+        : String(dialog.openFolder).split("/").pop()
+    /** True while the OPEN FOLDER holds no live notes — a different question from the
+     *  library being empty, and the one the scoped empty state asks. */
+    readonly property bool folderIsEmpty: (manifest.folderCount !== undefined
+                                           ? manifest.folderCount : dialog.order.length) === 0
     property bool closeRequested: false
     property bool allowDiscard: false
     property bool paletteOpen: false
@@ -426,6 +436,7 @@ PlasmaCore.Dialog {
         dialog.ids = value.ids; dialog.titles = value.titles
         dialog.papers = value.paper; dialog.inks = value.ink
         dialog.palette = value.palette; dialog.palettes = value.palettes; dialog.order = value.order
+        if(value.openFolder !== undefined) dialog.openFolder = value.openFolder
         dialog.activePalette = value.activePalette
         dialog.inkModes = value.inkMode; dialog.inkStored = value.inkStored
         titleField.reset()
@@ -489,6 +500,28 @@ PlasmaCore.Dialog {
         }
         Qt.openUrlExternally(href)
     }
+    /** Point the fan at `folder` (root-relative; "" is the library root).
+     *
+     *  THE scoping gesture. Opening a folder in the Library, opening a note from the
+     *  Library, creating a note and restoring one all route through here, so none of them
+     *  can drift into a different idea of what the fan is showing.
+     *
+     *  The open card is collapsed first: it is showing a note from the folder being left,
+     *  and leaving it open would paint a card whose tab is no longer on the edge.
+     *  @return true when the scope moved (or was already there). */
+    function scopeToFolder(folder) {
+        var wanted = folder === undefined || folder === null ? "" : String(folder)
+        if(wanted === dialog.openFolder) return true
+        var result = notesStore.openFolder(wanted)
+        if(!result || !result.ok) {
+            dialog.saveStatus = "Folder refused · " + (result && result.error ? result.error : "unknown")
+            return false
+        }
+        dialog.collapse()
+        applyManifest(result)
+        dialog.selected = 0
+        return true
+    }
     /** Create a note, put it on the fan, and open it. THE creation path — the fan's "+",
      *  the empty state's button and Ctrl+N all run this one body, so none can drift into
      *  reporting a different refusal than the others.
@@ -498,9 +531,11 @@ PlasmaCore.Dialog {
      *   arrives precisely because the window already holds focus.
      * @return the new note's id, or "" on refusal; the refusal text goes to saveStatus. */
     function createNoteOnFan(activate) {
-        var id = collection.createNote("")
+        // "Whatever folder is open, that's where the note goes" — the Principal's rule.
+        // There is no joinFan afterwards: the note is in the open folder, so the engine's
+        // derivation already has it on the fan.
+        var id = collection.createNote(dialog.openFolder)
         if(!id) { dialog.saveStatus = "New note refused · " + collection.lastError; return "" }
-        collection.joinFan(id)
         applyManifest(notesStore.load())
         // Guarded by identity, not by count: a manifest that does not hold the new id
         // would make openNoteId() select index -1 and paint an empty card.
@@ -853,7 +888,10 @@ PlasmaCore.Dialog {
     /** Return an archived note to the folder it came from and put it back on the fan. */
     function restoreNote(id) {
         if(!collection.restoreArchive(id)) { dialog.saveStatus = "Restore refused · " + collection.lastError; return }
-        collection.joinFan(id)
+        // The note went back to the folder it came from, which may not be the open one.
+        // Follow it: a restore that leaves the note invisible reads as a failed restore.
+        var document = collection.documentObject(id)
+        dialog.scopeToFolder(document ? document.folder : "")
         applyManifest(notesStore.load())
         dialog.libraryOpen = false
         var at = dialog.order.indexOf(id)
@@ -870,7 +908,10 @@ PlasmaCore.Dialog {
             return
         }
         dialog.confirmRestoreId = ""
-        collection.joinFan(id)
+        // Opening a note from the Library scopes the fan to ITS folder — the same gesture
+        // as opening that folder. Nothing "joins": membership is derived from the scope.
+        var target = collection.documentObject(id)
+        dialog.scopeToFolder(target ? target.folder : "")
         applyManifest(notesStore.load())
         dialog.libraryOpen = false
         var at = dialog.order.indexOf(id)
@@ -887,13 +928,15 @@ PlasmaCore.Dialog {
         if(document.pinned) { unpinNote(id); return }
         collection.saveNow(id)
         if(!collection.setPinned(id, true)) { dialog.saveStatus = "Pin refused · " + collection.lastError; return }
-        collection.leaveFan(id)
+        // No leaveFan: pinned is one of the three exclusions the derivation applies, so
+        // setting the pin is what takes the tab off the edge.
         dialog.pinnedIds = dialog.pinnedIds.concat([id])
         reselectAfterFiling(id)
     }
     function unpinNote(id) {
+        // Clearing the pin is enough — the note returns to the fan whenever its folder is
+        // the open one, in the slot this folder's persisted order kept for it.
         collection.setPinned(id, false)
-        collection.joinFan(id)
         var next = dialog.pinnedIds.slice()
         var at = next.indexOf(id)
         if(at >= 0) next.splice(at,1)
@@ -908,7 +951,8 @@ PlasmaCore.Dialog {
         for(var i=0;i<catalog.length;i++) {
             var document = collection.documentObject(catalog[i])
             if(document && document.pinned && !document.archived && !document.trashed && !document.missing) {
-                collection.leaveFan(catalog[i])
+                // The engine already keeps a pinned note off the fan; this only rebuilds
+                // the window register.
                 restored.push(catalog[i])
             }
         }
@@ -1787,12 +1831,36 @@ PlasmaCore.Dialog {
             // Title and subtitle, not one cramped line: the folder is the thing the user
             // recognises, so it leads at a readable size and the count is a quiet second line
             // rather than another clause fighting for the same 11 px.
+            /** The library name is also the ROOT ROW: the tree draws no row for the root
+             *  itself, so without this there is no gesture that returns the fan to the
+             *  top-level notes. The Principal required one explicitly. */
             Text {
                 id: libraryTitle
+                objectName: "library-root-row"
                 x: 14; y: 12; width: parent.width - 52; elide: Text.ElideMiddle
                 font.family: dialog.noteFont; font.pixelSize: 14; font.weight: Font.DemiBold
                 color: dialog.ink
+                opacity: libraryRootArea.containsMouse ? 1.0 : 0.92
                 text: libraryRoot ? String(libraryRoot).split("/").pop() : "No folder"
+                Accessible.role: Accessible.Button
+                Accessible.name: dialog.openFolder === ""
+                    ? (libraryTitle.text + "; the fan is showing this folder")
+                    : (libraryTitle.text + "; open it to return the fan to the top-level notes")
+                Rectangle {
+                    // Marker in the same ink language the rows use, so "you are here"
+                    // reads the same whether the scope is the root or a subfolder.
+                    visible: dialog.openFolder === ""
+                    x: -8; anchors.verticalCenter: parent.verticalCenter
+                    width: 2; height: 14; radius: 1
+                    color: dialog.ink; opacity: 0.55
+                }
+                MouseArea {
+                    id: libraryRootArea
+                    anchors.fill: parent; anchors.margins: -4
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: { dialog.scopeToFolder(""); dialog.libraryOpen = false }
+                }
             }
             Text {
                 id: librarySubtitle
@@ -1800,10 +1868,10 @@ PlasmaCore.Dialog {
                 width: parent.width - 52; elide: Text.ElideRight
                 font.family: dialog.noteFont; font.pixelSize: 10
                 color: dialog.derivedTone(dialog.paperColor, 0.5)
-                // Archive and Assets are no longer listed, so say what the panel shows
-                // rather than describing a tree that is not there.
+                // The panel lists the WHOLE library; the fan is one folder of it. Say
+                // which folder that is, because the tree alone cannot.
                 text: libraryModel.count + (libraryModel.count === 1 ? " note" : " notes")
-                      + " · archived notes are marked"
+                      + " · fan: " + dialog.openFolderLabel
             }
             // A panel someone can be FORCED to use needs its own way out: with an empty
             // fan this panel is the entire interface.
@@ -1873,26 +1941,48 @@ PlasmaCore.Dialog {
                      *  language the selected fan stick uses; without it the Library cannot
                      *  answer "which of these am I looking at". */
                     Rectangle {
-                        visible: libraryRow.current && !libraryRow.isFolder
+                        objectName: "library-row-marker"
+                        // The note open in the card, OR the folder the fan is currently a
+                        // window onto. Without the second case the Library cannot answer
+                        // "which of these folders am I looking at".
+                        visible: libraryRow.isFolder
+                            ? (!libraryRow.archived && libraryRow.path === dialog.openFolder)
+                            : libraryRow.current
                         x: 2; anchors.verticalCenter: parent.verticalCenter
                         width: 2; height: 16; radius: 1
                         color: dialog.ink; opacity: 0.55
                     }
                     /** A real icon per row, not a "▸" in the label text. A folder states
                      *  its own openness; a note wears its assigned tab icon, so the Library
-                     *  and the deck agree about what a note looks like. */
+                     *  and the deck agree about what a note looks like.
+                     *
+                     *  On a FOLDER the icon is also the expand/collapse control. Clicking
+                     *  the row now OPENS the folder (scopes the fan to it), so collapsing
+                     *  the subtree needs its own target rather than sharing one press with
+                     *  a gesture that changes what the whole edge shows. */
                     Kirigami.Icon {
                         id: rowIcon
                         x: 10 + libraryRow.depth*14
                         anchors.verticalCenter: parent.verticalCenter
                         width: 16; height: 16
                         smooth: true
+                        // ABOVE libraryRowArea, which is declared later and anchors.fill
+                        // the whole row: without this the twisty never sees a press.
+                        z: 3
                         opacity: libraryRow.archived ? 0.55 : 0.9
                         source: libraryRow.isFolder
                             ? (libraryRow.expanded ? "folder-open" : "folder")
                             : (dialog.iconSourceFor(dialog.iconOf(libraryRow.documentId)) !== ""
                                 ? dialog.iconSourceFor(dialog.iconOf(libraryRow.documentId))
                                 : "text-markdown")
+                        MouseArea {
+                            objectName: "library-row-twisty"
+                            anchors.fill: parent
+                            anchors.margins: -4
+                            enabled: libraryRow.isFolder
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: libraryModel.toggle(libraryRow.index)
+                        }
                     }
                     Text {
                         id: rowLabel
@@ -1948,13 +2038,26 @@ PlasmaCore.Dialog {
                         anchors.fill: parent; hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
                         onClicked: {
-                            if(libraryRow.isFolder) libraryModel.toggle(libraryRow.index)
+                            // Opening a folder IS the scoping gesture: the fan becomes that
+                            // folder's notes. Expanding the subtree is the folder ICON's job
+                            // (rowIcon above), so one press never does both.
+                            if(libraryRow.isFolder) {
+                                if(libraryRow.archived) return   // Archive is never a fan scope
+                                libraryModel.revealFolder(libraryRow.path)
+                                dialog.scopeToFolder(libraryRow.path)
+                                dialog.libraryOpen = false
+                            }
                             else if(libraryRow.documentId) dialog.openFromLibrary(libraryRow.documentId)
                         }
                     }
                     Accessible.role: Accessible.Button
                     Accessible.name: libraryRow.isFolder
-                        ? ("Folder " + libraryRow.name)
+                        ? (libraryRow.archived
+                            ? ("Archive folder " + libraryRow.name + "; archived notes are never on the fan")
+                            : ("Folder " + libraryRow.name
+                               + (libraryRow.path === dialog.openFolder
+                                    ? "; open on the fan now"
+                                    : "; open it to show its notes on the fan")))
                         : (libraryRow.archived
                             ? (libraryRow.armed
                                 ? ("Archived note " + libraryRow.name + "; press again to restore it to its original folder and open it")
@@ -2187,8 +2290,18 @@ PlasmaCore.Dialog {
         }
         // First-run / welcome state: fixed dark chrome (the Settings tones), the application
         // icon, instructions and theme-consistent buttons rather than default buttons on note
-        // paper. Shown whenever the FAN is empty, which is not the library being empty:
-        // archiving or pinning the last note leaves a full library and no fan.
+        // paper. Shown whenever the FAN is empty, which is now THREE distinct situations and
+        // must not read as one:
+        //
+        //   libraryIsEmpty  — genuine first run. The full welcome: what the app is, how
+        //                     each part is reached, "Create the first note".
+        //   folderIsEmpty   — an empty FOLDER inside a library that has notes. A light
+        //                     panel: say which folder, offer creation here and the way back
+        //                     to the whole library. Reciting the first-run tour over a
+        //                     library of 60 notes reads as data loss.
+        //   neither         — this folder's notes are all archived or pinned.
+        //
+        // Creation stays reachable in all three, and it creates into the OPEN folder.
         Rectangle {
             id: emptyState
             objectName: "empty-state"
@@ -2252,16 +2365,24 @@ PlasmaCore.Dialog {
                     width: parent.width; wrapMode: Text.Wrap
                     font.family: dialog.neutralFont; font.pixelSize: 13
                     color: dialog.neutralText
-                    text: dialog.libraryIsEmpty ? "This folder has no notes yet."
-                                                : "No notes are on the fan right now."
+                    text: dialog.libraryIsEmpty
+                        ? "This folder has no notes yet."
+                        : (dialog.folderIsEmpty
+                            ? ("\u201C" + dialog.openFolderLabel + "\u201D has no notes yet.")
+                            : ("Nothing from \u201C" + dialog.openFolderLabel + "\u201D is on the fan right now."))
                 }
                 Text {
                     objectName: "empty-state-folder"
                     width: parent.width; wrapMode: Text.Wrap; elide: Text.ElideMiddle
                     font.family: dialog.neutralFont; font.pixelSize: 10
                     color: dialog.neutralText; opacity: 0.7
-                    text: shellControl.rootPath ? ("Notes folder:  " + shellControl.rootPath)
-                                                : "No folder has been chosen yet."
+                    // The library root, plus the open subfolder when the fan is scoped
+                    // into one: "no notes here" is only answerable if you can see where
+                    // "here" is.
+                    text: shellControl.rootPath
+                        ? ("Notes folder:  " + shellControl.rootPath
+                           + (dialog.openFolder === "" ? "" : ("/" + dialog.openFolder)))
+                        : "No folder has been chosen yet."
                 }
                 // What the application IS and how each part is reached, not one sentence
                 // about files.
@@ -2275,8 +2396,11 @@ PlasmaCore.Dialog {
                           + "• Each note is a coloured tab on the fan at the screen edge; hover the edge to spread them.\n"
                           + "• The + above the fan creates a note; the footer inside a note holds colours, Library, pin, archive.\n"
                           + "• The tray icon gives New note, Show the fan and Quit at any time."
-                        : "Your notes are still there — archived, or open in pinned windows.\n"
-                          + "Open the Library to bring one back to the fan, or create a new note."
+                        : (dialog.folderIsEmpty
+                            ? "The fan shows one folder at a time. Your other notes are safe in the Library — open a folder there to fan it.\n"
+                              + "The + creates a note in this folder."
+                            : "This folder's notes are still there — archived, or open in pinned windows.\n"
+                              + "Open the Library to bring one back, or create a new note here.")
                 }
                 Row {
                     spacing: 8
@@ -2291,6 +2415,14 @@ PlasmaCore.Dialog {
                         visible: !dialog.libraryIsEmpty
                         label: "Open the Library"
                         onActivated: dialog.toggleLibrary()
+                    }
+                    WelcomeButton {
+                        objectName: "empty-state-root"
+                        // One press back to the top-level notes, without hunting for the
+                        // Library's root row. Pointless when already at the root.
+                        visible: !dialog.libraryIsEmpty && dialog.openFolder !== ""
+                        label: "Back to all notes"
+                        onActivated: dialog.scopeToFolder("")
                     }
                     WelcomeButton {
                         objectName: "empty-state-folder-btn"

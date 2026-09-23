@@ -67,12 +67,15 @@ QString SessionController::createNoteInRoot()
     if (!m_collection) {
         return {};
     }
+    // "In the root" means the fan's own scope when the fan IS the root; otherwise the
+    // caller asked for the root explicitly and gets it, which also re-scopes the fan so
+    // the new note is visible rather than created somewhere the user cannot see.
     const QString id = m_collection->createNote(QString());
     if (id.isEmpty()) {
         setError(m_collection->lastError());
         return {};
     }
-    m_collection->joinFan(id);
+    m_collection->setOpenFolder(QString());
     selectDocument(id);
     emit focusEditorRequested(id);
     return id;
@@ -89,7 +92,10 @@ QString SessionController::createNoteInLibraryFolder()
         setError(m_collection->lastError());
         return {};
     }
-    m_collection->joinFan(id);
+    // The + creates in the open folder and the note appears on the fan naturally. When the
+    // Library's selection points somewhere else, creating there MOVES the scope: a note
+    // created into a folder nobody is looking at would otherwise vanish on arrival.
+    m_collection->setOpenFolder(folder);
     selectDocument(id);
     emit focusEditorRequested(id);
     return id;
@@ -121,7 +127,10 @@ bool SessionController::openFromLibrary(const QString &id)
         setError(QStringLiteral("Restore this note from Archive before opening it in the fan"));
         return false;
     }
-    if (!m_collection->joinFan(id)) {
+    // Opening a note from the Library scopes the fan to the folder that note lives in —
+    // the same gesture as opening its folder. Membership is derived, so there is nothing
+    // to "join": once the scope moves, the note is on the fan.
+    if (!m_collection->setOpenFolder(m_collection->document(id)->folder())) {
         setError(m_collection->lastError());
         return false;
     }
@@ -210,12 +219,10 @@ bool SessionController::closePinned(const QString &id)
     }
     m_pinnedIds.removeOne(id);
     if (m_collection) {
+        // Closing a pinned window is not a delete and not a dismissal: clearing the pin
+        // is enough — the derivation puts the note back on the fan whenever its folder is
+        // the open one, in the slot this folder's persisted order kept for it.
         m_collection->setPinned(id, false);
-        // Closing a pinned window is not a delete and not a dismissal: the note goes on
-        // living in the fan exactly as it did before it was pinned.
-        if (available(id)) {
-            m_collection->joinFan(id);
-        }
     }
     if (m_leases) {
         m_leases->release(pinnedOwner(id));

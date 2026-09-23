@@ -70,7 +70,12 @@ public:
     /** Last settled pinned-window client size; zero means use the UI default. */
     int pinnedWindowWidth() const { return m_pinnedWindowWidth; }
     int pinnedWindowHeight() const { return m_pinnedWindowHeight; }
-    /** True while this note is part of the explicit, persisted fan working set. */
+    /** True while this note is currently ON the fan.
+     *
+     * DERIVED, never set by hand: a note is on the fan when it lives in the collection's
+     * open folder and is not archived, trashed or pinned. The flag is a cached answer to
+     * that question, refreshed by DocumentCollection::rebuildFan().
+     */
     bool inFan() const { return m_inFan; }
     QString paper() const { return m_paper; }
     QString ink() const { return m_ink; }
@@ -116,16 +121,18 @@ private:
     friend class DocumentCollection;
 };
 
-/** Recursive selected-folder document engine for Fan Fold.
+/** Folder-scoped document engine for Fan Fold.
  *
  * The collection owns two separate orders and never confuses them:
  *
  * - The **catalog** is every ordinary UTF-8 Markdown file discovered below the one
  *   explicitly selected root, ordered by relative path. It is what this model's rows are,
  *   so the Library tree and search see a stable, deterministic list.
- * - The **fan** is an explicit, user-curated and persisted working set of note IDs with
- *   its own order. Notes join it deliberately and leave it when archived or trashed;
- *   discovering a file never adds it to the fan.
+ * - The **fan** is a WINDOW ONTO ONE FOLDER: the notes of `openFolder()`, direct children
+ *   only, minus anything archived, trashed or pinned. Membership is DERIVED from that
+ *   rule and is not state — nothing "joins" the fan. What IS state is the per-folder
+ *   ORDER the user arranges by dragging, and the open folder itself; both persist in the
+ *   XDG index.
  *
  * It combines QFileSystemWatcher invalidations with authoritative rescans, writes edits
  * through QSaveFile after a precise 250 ms quiet period restarted by every keystroke,
@@ -148,6 +155,7 @@ class DocumentCollection final : public QAbstractListModel
     Q_PROPERTY(int count READ rowCount NOTIFY documentsChanged)
     Q_PROPERTY(QStringList fanIds READ fanIds NOTIFY fanChanged)
     Q_PROPERTY(int fanCount READ fanCount NOTIFY fanChanged)
+    Q_PROPERTY(QString openFolder READ openFolder NOTIFY openFolderChanged)
 
 public:
     enum Role {
@@ -196,9 +204,11 @@ public:
     Q_INVOKABLE QStringList catalogIds() const { return m_catalog; }
     /** Backwards-compatible alias of catalogIds(). */
     QStringList documentIds() const { return m_catalog; }
-    /** The explicit persisted fan working set, in its own user-controlled order. */
+    /** The fan: the open folder's notes, in this folder's own persisted order. */
     QStringList fanIds() const { return m_fan; }
     int fanCount() const { return int(m_fan.size()); }
+    /** Root-relative folder the fan is currently a window onto; empty means the root. */
+    QString openFolder() const { return m_openFolder; }
     Document *document(const QString &id) const { return m_documents.value(id); }
     /** Absolute path of the XDG index this library persists its metadata to. */
     Q_INVOKABLE QString metadataPath() const;
@@ -242,12 +252,19 @@ public:
     Q_INVOKABLE bool moveToTrash(const QString &id);
     Q_INVOKABLE bool restoreFromTrash(const QString &id);
 
-    /** Add a note to the persisted fan working set; idempotent. */
-    Q_INVOKABLE bool joinFan(const QString &id);
-    /** Remove a note from the fan without touching the file or the catalog. */
-    Q_INVOKABLE bool leaveFan(const QString &id);
-    /** Replace the fan order; unknown IDs are dropped and the set is not extended. */
+    /** Point the fan at `folder` (root-relative; empty means the root).
+     *
+     * The scoping gesture: opening a folder in the Library calls this. The folder need
+     * not contain notes — an empty folder gives an empty fan, which is a legitimate state
+     * and not a refusal. A folder that does not exist on disk is refused and the previous
+     * scope is kept.
+     * @return false with lastError() set when the folder is outside the root, is the
+     * Archive tree, or does not exist.
+     */
+    Q_INVOKABLE bool setOpenFolder(const QString &folder);
+    /** Replace the OPEN FOLDER's tab order; must be a permutation of the current fan. */
     Q_INVOKABLE bool setFanOrder(const QStringList &ids);
+    /** True while `id` is on the fan right now — i.e. in the open folder and available. */
     Q_INVOKABLE bool isInFan(const QString &id) const { return m_fan.contains(id); }
 
     Q_INVOKABLE bool setPinned(const QString &id, bool pinned);
@@ -267,6 +284,7 @@ signals:
     void errorChanged();
     void documentsChanged();
     void fanChanged();
+    void openFolderChanged();
     void documentChanged(const QString &id);
     void documentAdded(const QString &id);
     void documentRemoved(const QString &id);
@@ -308,7 +326,14 @@ private:
     QHash<QString, QTimer *> m_saveTimers;
     QSet<QString> m_recoveryApplied;
     QStringList m_catalog;
+    /** The open folder's fan, derived and rebuilt; never assigned by a caller. */
     QStringList m_fan;
+    /** Root-relative open folder; empty is the library root. */
+    QString m_openFolder;
+    /** Persisted per-folder tab order, folder -> ids. Holds ids that are not currently on
+     *  the fan (archived, pinned, or simply not yet rediscovered) so a note returning to
+     *  a folder resumes its old slot instead of being appended. */
+    QHash<QString, QStringList> m_folderOrder;
     QJsonObject m_metadata;
     bool m_open = false;
     bool m_reconciling = false;
@@ -334,6 +359,17 @@ private:
     bool prepareLibrary(const QString &folder, PendingLibrary *pending);
     void adoptLibrary(PendingLibrary &&pending);
     void teardownLibrary();
+    /** True when `id` belongs on the fan right now: in the open folder, and neither
+     *  archived, trashed, missing-and-clean nor pinned. */
+    bool belongsOnFan(const Document *document) const;
+    /** Re-derive m_fan from the open folder, honouring this folder's persisted order and
+     *  appending anything new in catalog order. Emits fanChanged() only on a real change.
+     *  @return true when the fan actually changed. */
+    bool rebuildFan();
+    /** Read the folder a persisted order entry belongs to, normalised (root = ""). */
+    static QString normalizedFolder(const QString &folder);
+    /** The per-folder order as JSON for the index, pruned to live ids. */
+    QJsonObject storedFolderOrder() const;
     bool persistMetadata();
     void markMetadataDirty();
     QJsonObject metadataFor(const Document *document) const;
