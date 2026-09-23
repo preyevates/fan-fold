@@ -43,6 +43,40 @@ if(FANFOLD_LOCAL_THEME_BUNDLE)
         ENVIRONMENT "FANFOLD_TEST_THEME_BUNDLE=${FANFOLD_LOCAL_THEME_CATALOG_DIR}")
 endif()
 
+# The fan's geometry contract. LayoutContract.js is pure and carries no scene state, but
+# what it decides is WHICH NOTE a click opens, so the suite rebuilds the stick delegate as
+# Main.qml binds it and fires real mouse events through Qt's hit-testing rather than
+# asserting returned numbers alone.
+#
+# Run by qmltestrunner, which needs no compiled target: the contract is JavaScript and the
+# delegate under test is QML. Both files are staged into one build directory so the QML
+# `import "LayoutContract.js"` resolves, and the staged copy is refreshed by configure_file
+# whenever the real contract changes, so the suite can never run against a stale duplicate.
+find_program(QMLTESTRUNNER_EXECUTABLE
+    NAMES qmltestrunner qmltestrunner-qt6
+    HINTS ${QT6_INSTALL_PREFIX}/${QT6_INSTALL_BINS} /usr/lib/qt6/bin)
+
+if(QMLTESTRUNNER_EXECUTABLE)
+    set(FANFOLD_QML_TEST_STAGE ${CMAKE_CURRENT_BINARY_DIR}/qml-contract)
+    configure_file(
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../src/shell/qml/LayoutContract.js
+        ${FANFOLD_QML_TEST_STAGE}/LayoutContract.js COPYONLY)
+    configure_file(
+        ${CMAKE_CURRENT_SOURCE_DIR}/qml/tst_layoutcontract.qml
+        ${FANFOLD_QML_TEST_STAGE}/tst_layoutcontract.qml COPYONLY)
+
+    add_test(
+        NAME fanfold-layoutcontract
+        COMMAND ${QMLTESTRUNNER_EXECUTABLE} -input ${FANFOLD_QML_TEST_STAGE})
+    # offscreen: the suite needs a real QQuickWindow for event delivery, but no display.
+    set_tests_properties(fanfold-layoutcontract PROPERTIES
+        TIMEOUT 120
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+else()
+    message(WARNING
+        "qmltestrunner not found; the LayoutContract geometry suite will not run.")
+endif()
+
 # Appearance needs a real QGuiApplication for the platform font database; it selects the
 # offscreen platform plugin itself and opens no display.
 add_executable(tst_appearance tst_appearance.cpp)
