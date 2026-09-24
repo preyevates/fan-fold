@@ -1780,9 +1780,9 @@ PlasmaCore.Dialog {
             id: fanTrigger
             objectName: "fan-trigger"
             x: surface.width-dialog.fanTabWidth-dialog.fanLiftReserve
-            // From the very top when auto-hide is on: the corner reveal mark then sits INSIDE
-            // this strip, so revealing rides the same containsMouse -> fanPointerInside ->
-            // hysteresis chain every fan hover uses and no second hover path can disagree.
+            // With auto-hide the target reaches the small painted reveal handle at the bottom
+            // of this otherwise trimmed window. That keeps the affordance discoverable without
+            // turning a transparent, full-screen edge lane into a click-eating window.
             // Otherwise the strip spans from the TOP-most stick down to the window's bottom
             // edge, "+" included.
             y: dialog.appearance.fanAutoHide === true ? 0
@@ -1794,6 +1794,14 @@ PlasmaCore.Dialog {
             acceptedButtons: Qt.NoButton
             Accessible.role: Accessible.Grouping
             Accessible.name: "Note deck; hover the edge to spread the notes"
+        }
+        FanAutoHideReveal {
+            id: fanAutoHideReveal
+            x: surface.width-width-2
+            y: Math.max(0, surface.height-height-6)
+            z: fanTrigger.z+1
+            hidden: dialog.fanHiddenIdle
+            ink: dialog.ink
         }
         // The Library: browse the whole folder tree, including Archive, and put an archived
         // note back. Built from the same in-card panel idiom as File details above. Rows

@@ -88,6 +88,7 @@ install(TARGETS fanfold RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 # so they install as one unit.
 install(FILES
     qml/Main.qml
+    qml/FanAutoHideReveal.qml
     qml/PinnedNoteWindow.qml
     qml/QuietButton.qml
     qml/LibraryRowAction.qml
