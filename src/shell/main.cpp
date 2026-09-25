@@ -694,10 +694,13 @@ int main(int argc, char **argv)
         return 2;
     }
 
-    QQmlApplicationEngine engine;
-    QQmlContext *context = engine.rootContext();
+    // Declared before the engine so they outlive it: locals die in reverse order, and a
+    // context object destroyed while the engine still runs turns into null under live
+    // bindings that read it during teardown.
     TrayBridge tray;
     ShellControl shellControl(&collection);
+    QQmlApplicationEngine engine;
+    QQmlContext *context = engine.rootContext();
     // The names Main.qml binds to, supplied by adapters over the real engine.
     context->setContextProperty(QStringLiteral("notesStore"), &notes);
     context->setContextProperty(QStringLiteral("store"), &store);
