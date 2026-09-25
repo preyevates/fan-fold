@@ -72,6 +72,7 @@ class LibraryModelsTest final : public QObject
 private slots:
     void showsAnOrdinaryCollapsedFolderTreeOfTheCatalog();
     void expandingAFolderRevealsExactlyItsOwnChildren();
+    void sectionsNameTheContainingFolderAndCollapseAllResets();
     void archiveIsHiddenUntilItIsExplicitlyRequested();
     void currentFolderTracksTheSelectedRowForNewNote();
     void followsCatalogChangesWithoutLosingExpansion();
@@ -148,6 +149,43 @@ void LibraryModelsTest::expandingAFolderRevealsExactlyItsOwnChildren()
     model.toggle(model.rowForFolder(QStringLiteral("Work")));
     QCOMPARE(outline(model), (QStringList{"0:Admin", "0:Work"}));
     QVERIFY(!model.isExpanded(QStringLiteral("Work/Deep")));
+}
+
+void LibraryModelsTest::sectionsNameTheContainingFolderAndCollapseAllResets()
+{
+    Fixture f;
+    writeBytes(f.notes.filePath("Work/Plan.md"), "p\n");
+    writeBytes(f.notes.filePath("Work/Deep/Detail.md"), "d\n");
+    writeBytes(f.notes.filePath("Root note.md"), "r\n");
+    auto &collection = f.collection();
+    LibraryModel model(&collection);
+
+    // The folder row itself must report the change: a delegate that toggles on its
+    // expanded role would otherwise keep re-expanding a folder it already opened.
+    QSignalSpy changed(&model, &QAbstractItemModel::dataChanged);
+    model.setExpanded(QStringLiteral("Work"), true);
+    QVERIFY(model.data(model.index(0), LibraryModel::ExpandedRole).toBool());
+    bool folderRowSignalled = false;
+    for (const auto &args : changed) {
+        folderRowSignalled |= args.at(0).value<QModelIndex>().row() == 0;
+    }
+    QVERIFY(folderRowSignalled);
+    model.setExpanded(QStringLiteral("Work/Deep"), true);
+    QStringList sections;
+    for (int r = 0; r < model.rowCount(); ++r) {
+        sections.append(model.data(model.index(r), LibraryModel::NameRole).toString()
+                        + QLatin1Char('@')
+                        + model.data(model.index(r), LibraryModel::SectionRole).toString());
+    }
+    // A folder row belongs to its parent's section, so it never sits beneath a header
+    // repeating its own name; root rows carry no section at all.
+    QCOMPARE(sections, (QStringList{"Work@", "Deep@Work", "Detail@Work/Deep", "Plan@Work",
+                                    "Root note@"}));
+
+    model.collapseAll();
+    QVERIFY(!model.isExpanded(QStringLiteral("Work")));
+    QVERIFY(!model.isExpanded(QStringLiteral("Work/Deep")));
+    QCOMPARE(outline(model), (QStringList{"0:Work", "0:Root note"}));
 }
 
 void LibraryModelsTest::archiveIsHiddenUntilItIsExplicitlyRequested()

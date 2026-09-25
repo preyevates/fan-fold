@@ -317,6 +317,9 @@ PlasmaCore.Dialog {
             iconPanelOpen = false
             if(loader.item) loader.item.runJavaScript("if(window.appearance&&appearance.open) appearance.toggle(false); if(window.fan&&fan.formattingVisible()) fan.toggleFormatting()")
             libraryModel.showArchive = true   // the panel's whole purpose is restoring
+            // Every open starts from the compact index: expansion left over from the last
+            // visit would reopen at an arbitrary scroll depth instead of at the folders.
+            libraryModel.collapseAll()
             // Folders come from the directory walk, which nothing watches, so a folder
             // created since the last build stays invisible until restart. The library is
             // small and the walk costs microseconds, so re-walk on every open.
@@ -499,6 +502,15 @@ PlasmaCore.Dialog {
             return
         }
         Qt.openUrlExternally(href)
+    }
+    /** Scope the fan from inside the Library without dismissing it. Scoping collapses the
+     *  card, and the panel is only drawn over an open card, so the new folder's first note
+     *  is opened to keep the panel on screen for the next row the user reaches for. */
+    function scopeToFolderKeepingLibrary(folder) {
+        var wasOpen = dialog.expanded
+        if(!dialog.scopeToFolder(folder)) return false
+        if(wasOpen && !dialog.expanded && dialog.order.length > 0) dialog.openNote(0)
+        return true
     }
     /** Point the fan at `folder` (root-relative; "" is the library root).
      *
@@ -1926,11 +1938,40 @@ PlasmaCore.Dialog {
                         color: dialog.derivedTone(dialog.paperColor, 0.32)
                     }
                 }
-                // A scrollbar provides position, not context. Keep the current folder legible
-                // while rows pass beneath the panel's compact breadcrumb.
-                readonly property int scrollRow: indexAt(10, Math.max(0, contentY + 10))
-                readonly property string scrollFolder: scrollRow >= 0
-                    ? libraryModel.folderForRow(scrollRow) : ""
+                // A scrollbar provides position, not context. The folder a note row sits in
+                // is its section, and the current section's header stays pinned at the top
+                // while that folder's notes scroll beneath it. Root rows have no section and
+                // so no header: they already sit at the top level the panel title names.
+                section.property: "section"
+                section.criteria: ViewSection.FullString
+                section.labelPositioning: ViewSection.CurrentLabelAtStart
+                section.delegate: Rectangle {
+                    id: librarySection
+                    required property string section
+                    objectName: "library-section-header"
+                    width: libraryList.width - 4
+                    height: section !== "" ? 22 : 0
+                    visible: section !== ""
+                    z: 2
+                    radius: 5
+                    // Opaque, so the rows scrolling under a pinned header never show through.
+                    color: Qt.lighter(dialog.paperColor, 1.04)
+                    Rectangle {
+                        anchors.fill: parent
+                        radius: parent.radius
+                        color: dialog.derivedTone(dialog.paperColor, 0.14)
+                    }
+                    Text {
+                        x: 10; width: parent.width - 20
+                        anchors.verticalCenter: parent.verticalCenter
+                        elide: Text.ElideMiddle
+                        font.family: dialog.noteFont; font.pixelSize: 10; font.weight: Font.DemiBold
+                        color: dialog.ink
+                        text: librarySection.section
+                    }
+                    Accessible.role: Accessible.Heading
+                    Accessible.name: "Folder " + librarySection.section
+                }
                 delegate: Item {
                     id: libraryRow
                     required property int index
@@ -1958,7 +1999,11 @@ PlasmaCore.Dialog {
                         anchors.fill: parent
                         anchors.rightMargin: 4
                         radius: 5
-                        color: libraryRowArea.containsMouse ? dialog.derivedTone(dialog.paperColor, 0.12)
+                        // Folder rows wear the note spine's derived tone at rest, so the
+                        // filing structure reads apart from the notes filed in it.
+                        color: libraryRowArea.containsMouse
+                               ? dialog.derivedTone(dialog.paperColor, libraryRow.isFolder ? 0.2 : 0.12)
+                               : libraryRow.isFolder ? dialog.derivedTone(dialog.paperColor, 0.12)
                                : libraryRow.current ? dialog.derivedTone(dialog.paperColor, 0.07)
                                                     : "transparent"
                     }
@@ -1979,20 +2024,15 @@ PlasmaCore.Dialog {
                     }
                     /** A real icon per row, not a "▸" in the label text. A folder states
                      *  its own openness; a note wears its assigned tab icon, so the Library
-                     *  and the deck agree about what a note looks like.
-                     *
-                     *  On a FOLDER the icon is also the expand/collapse control. Clicking
-                     *  the row now OPENS the folder (scopes the fan to it), so collapsing
-                     *  the subtree needs its own target rather than sharing one press with
-                     *  a gesture that changes what the whole edge shows. */
+                     *  and the deck agree about what a note looks like. */
                     Kirigami.Icon {
                         id: rowIcon
                         x: 10 + libraryRow.depth*14
                         anchors.verticalCenter: parent.verticalCenter
                         width: 16; height: 16
                         smooth: true
-                        // The icon is purely a state indicator. One press anywhere on the
-                        // folder row expands or collapses it; there is no hidden second target.
+                        // The icon is purely a state indicator: the whole row is the one
+                        // target, so there is no hidden second control to find.
                         z: 3
                         opacity: libraryRow.archived ? 0.55 : 0.9
                         source: libraryRow.isFolder
@@ -2058,10 +2098,20 @@ PlasmaCore.Dialog {
                         folderPath: libraryRow.path
                         documentId: libraryRow.documentId
                         onFolderRequested: function(folderPath) {
-                            // A folder is a disclosure control in the Library. The model
-                            // projects its children only while expanded, making this the lazy
-                            // loading boundary rather than a cosmetic arrow.
-                            libraryModel.toggle(libraryRow.index)
+                            // One press both discloses the folder and puts its notes on the
+                            // fan. A second press only folds the list back up: the fan keeps
+                            // the scope, because collapsing is tidying, not navigating away.
+                            // Expansion is also the model's lazy boundary, so children are
+                            // only projected once asked for.
+                            if(libraryRow.expanded) {
+                                libraryModel.setExpanded(folderPath, false)
+                                return
+                            }
+                            libraryModel.setExpanded(folderPath, true)
+                            dialog.scopeToFolderKeepingLibrary(folderPath)
+                        }
+                        onDisclosureRequested: function(folderPath) {
+                            libraryModel.setExpanded(folderPath, !libraryRow.expanded)
                         }
                         onDocumentRequested: function(documentId) {
                             dialog.openFromLibrary(documentId)
@@ -2078,28 +2128,6 @@ PlasmaCore.Dialog {
                                 ? ("Archived note " + libraryRow.name + "; press again to restore it to its original folder and open it")
                                 : ("Archived note " + libraryRow.name + "; restore and open, press twice"))
                             : ("Note " + libraryRow.name + "; open"))
-                }
-            }
-            Rectangle {
-                id: libraryScrollFolderIndicator
-                readonly property string folder: libraryList.scrollFolder
-                visible: libraryList.contentHeight > libraryList.height
-                         && libraryList.contentY > 2 && folder !== ""
-                x: libraryList.x + 6; y: libraryList.y + 6
-                width: Math.min(libraryList.width - 18, folderLabel.implicitWidth + 20)
-                height: 20; radius: 10; z: 12
-                color: Qt.rgba(dialog.ink.r, dialog.ink.g, dialog.ink.b, 0.16)
-                border.width: 1
-                border.color: Qt.rgba(dialog.ink.r, dialog.ink.g, dialog.ink.b, 0.26)
-                Text {
-                    id: folderLabel
-                    anchors.centerIn: parent
-                    width: parent.width - 12
-                    elide: Text.ElideMiddle
-                    horizontalAlignment: Text.AlignHCenter
-                    font.family: dialog.noteFont; font.pixelSize: 10; font.weight: Font.DemiBold
-                    color: dialog.ink
-                    text: libraryScrollFolderIndicator.folder
                 }
             }
         }

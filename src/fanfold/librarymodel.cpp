@@ -65,12 +65,18 @@ QVariant LibraryModel::data(const QModelIndex &index, int role) const
     case PathRole: return row.path;
     case DepthRole: return row.depth;
     case IsFolderRole: return row.isFolder;
-    case ExpandedRole: return row.isFolder && m_expanded.contains(row.path);
+    case ExpandedRole: return row.expanded;
     case HasChildrenRole: return row.isFolder && row.noteCount > 0;
     case NoteCountRole: return row.noteCount;
     case DocumentIdRole: return row.documentId;
     case ArchivedRole: return row.archived;
     case CurrentRole: return index.row() == m_currentRow;
+    case SectionRole: {
+        // The folder that CONTAINS the row, never the row's own path: a folder row then
+        // opens its own section instead of sitting under a header repeating its name.
+        const QString parent = QFileInfo(row.path).path();
+        return parent == QStringLiteral(".") ? QString() : parent;
+    }
     case DocumentRole:
         return row.isFolder || !m_collection
             ? QVariant()
@@ -85,7 +91,8 @@ QHash<int, QByteArray> LibraryModel::roleNames() const
             {IsFolderRole, "isFolder"}, {ExpandedRole, "expanded"},
             {HasChildrenRole, "hasChildren"}, {NoteCountRole, "noteCount"},
             {DocumentIdRole, "documentId"}, {ArchivedRole, "archived"},
-            {CurrentRole, "current"}, {DocumentRole, "document"}};
+            {CurrentRole, "current"}, {DocumentRole, "document"},
+            {SectionRole, "section"}};
 }
 
 void LibraryModel::setShowArchive(bool show)
@@ -147,6 +154,15 @@ void LibraryModel::setExpanded(const QString &folder, bool expanded)
     } else {
         m_expanded.remove(folder);
     }
+    rebuild();
+}
+
+void LibraryModel::collapseAll()
+{
+    if (m_expanded.isEmpty()) {
+        return;
+    }
+    m_expanded.clear();
     rebuild();
 }
 
@@ -306,11 +322,12 @@ void LibraryModel::appendFolder(QList<Row> &rows, const QString &folder, int dep
         row.archived = child == QStringLiteral("Archive")
             || child.startsWith(QStringLiteral("Archive/"));
         row.noteCount = notesUnder(child, childFolders, folderNotes);
+        row.expanded = m_expanded.contains(child);
         rows.append(row);
         // This is the lazy boundary: descendants enter the flat view only after their
         // own folder was opened. A deep library therefore starts as a legible index rather
         // than a fully materialised wall of rows.
-        if (m_expanded.contains(child)) {
+        if (row.expanded) {
             appendFolder(rows, child, depth + 1, childFolders, folderNotes);
         }
     }

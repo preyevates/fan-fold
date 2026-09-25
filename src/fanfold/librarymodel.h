@@ -41,7 +41,8 @@ public:
         DocumentIdRole,
         ArchivedRole,
         CurrentRole,
-        DocumentRole
+        DocumentRole,
+        SectionRole
     };
     Q_ENUM(Role)
 
@@ -64,6 +65,8 @@ public:
      * itself hidden inside a collapsed parent. */
     Q_INVOKABLE void setExpanded(const QString &folder, bool expanded);
     Q_INVOKABLE bool isExpanded(const QString &folder) const { return m_expanded.contains(folder); }
+    /** Forget every expansion, so the next rebuild shows only the top-level index. */
+    Q_INVOKABLE void collapseAll();
     /** Re-walk the library directory and re-emit rows. PUBLIC because the QML panel
      *  calls it on open — Q_INVOKABLE in a private section is silently ignored by moc,
      *  which surfaced as a TypeError only at runtime. */
@@ -92,6 +95,10 @@ private:
         int noteCount = 0;
         bool isFolder = false;
         bool archived = false;
+        /** Part of the row, not looked up at read time: the diff in applyRows only
+         *  signals rows whose value changed, so a disclosure state kept outside the row
+         *  would never reach the delegate that shows it. */
+        bool expanded = false;
 
         bool operator==(const Row &other) const = default;
     };

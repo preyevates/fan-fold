@@ -8,6 +8,7 @@ Item {
 
     property string requestedFolder: ""
     property string requestedDocument: ""
+    property string requestedDisclosure: ""
 
     LibraryRowAction {
         id: rowAction
@@ -18,6 +19,7 @@ Item {
         folderPath: "Work/Planning"
         documentId: ""
         onFolderRequested: function(folderPath) { root.requestedFolder = folderPath }
+        onDisclosureRequested: function(folderPath) { root.requestedDisclosure = folderPath }
         onDocumentRequested: function(documentId) { root.requestedDocument = documentId }
     }
 
@@ -28,6 +30,7 @@ Item {
         function init() {
             root.requestedFolder = ""
             root.requestedDocument = ""
+            root.requestedDisclosure = ""
             rowAction.folder = true
             rowAction.archived = false
             rowAction.folderPath = "Work/Planning"
@@ -42,8 +45,10 @@ Item {
 
         function test_archive_folder_is_never_a_scope() {
             rowAction.archived = true
+            rowAction.folderPath = "Archive"
             mouseClick(rowAction, 120, 20)
             compare(root.requestedFolder, "")
+            compare(root.requestedDisclosure, "Archive")
             compare(root.requestedDocument, "")
         }
 
