@@ -91,18 +91,15 @@ void LibraryModelsTest::showsAnOrdinaryCollapsedFolderTreeOfTheCatalog()
     auto &collection = f.collection();
 
     LibraryModel model(&collection);
-    // Folders before notes, each group ordered by name. Folders are OPEN by default: a
-    // tree showing only folder names, with every note hidden inside them, reads as a
-    // broken list rather than a tree. The model records an explicit COLLAPSE instead, so
-    // a newly discovered folder shows its contents immediately.
-    QCOMPARE(outline(model),
-             (QStringList{"0:Admin", "1:Bills", "0:Work", "1:Deep", "2:Detail", "1:Plan",
-                          "0:Root note"}));
+    // Folders are the library's compact, initial index. Their contents enter the flat
+    // projection only when the user asks for that folder, while root notes remain useful
+    // immediately.
+    QCOMPARE(outline(model), (QStringList{"0:Admin", "0:Work", "0:Root note"}));
 
     const QModelIndex admin = model.index(model.rowForFolder(QStringLiteral("Admin")));
     QCOMPARE(model.data(admin, LibraryModel::IsFolderRole).toBool(), true);
     QCOMPARE(model.data(admin, LibraryModel::HasChildrenRole).toBool(), true);
-    QCOMPARE(model.data(admin, LibraryModel::ExpandedRole).toBool(), true);
+    QCOMPARE(model.data(admin, LibraryModel::ExpandedRole).toBool(), false);
     QCOMPARE(model.data(admin, LibraryModel::NoteCountRole).toInt(), 1);
     QCOMPARE(model.data(model.index(model.rowForFolder(QStringLiteral("Work"))),
                         LibraryModel::NoteCountRole)
@@ -137,22 +134,20 @@ void LibraryModelsTest::expandingAFolderRevealsExactlyItsOwnChildren()
     auto &collection = f.collection();
     LibraryModel model(&collection);
 
-    // Open by default, so this test drives the COLLAPSE side of the same switch.
-    QCOMPARE(outline(model),
-             (QStringList{"0:Admin", "1:Bills", "0:Work", "1:Deep", "2:Detail", "1:Plan"}));
+    QCOMPARE(outline(model), (QStringList{"0:Admin", "0:Work"}));
 
     QSignalSpy resets(&model, &QAbstractItemModel::modelAboutToBeReset);
 
-    model.setExpanded(QStringLiteral("Work"), false);
-    QCOMPARE(outline(model), (QStringList{"0:Admin", "1:Bills", "0:Work"}));
+    model.setExpanded(QStringLiteral("Work"), true);
+    QCOMPARE(outline(model), (QStringList{"0:Admin", "0:Work", "1:Deep", "1:Plan"}));
     QCOMPARE(resets.count(), 0);
 
-    // Collapsing the parent hid the grandchild but did not collapse it: re-opening the
-    // parent restores the whole subtree, because only Work was recorded as collapsed.
+    // A single folder switch removes only its own projected children. Its nested folder
+    // remains collapsed until separately opened, so a large tree is never materialised
+    // merely by opening one level.
     model.toggle(model.rowForFolder(QStringLiteral("Work")));
-    QCOMPARE(outline(model),
-             (QStringList{"0:Admin", "1:Bills", "0:Work", "1:Deep", "2:Detail", "1:Plan"}));
-    QVERIFY(model.isExpanded(QStringLiteral("Work/Deep")));
+    QCOMPARE(outline(model), (QStringList{"0:Admin", "0:Work"}));
+    QVERIFY(!model.isExpanded(QStringLiteral("Work/Deep")));
 }
 
 void LibraryModelsTest::archiveIsHiddenUntilItIsExplicitlyRequested()
@@ -176,12 +171,14 @@ void LibraryModelsTest::archiveIsHiddenUntilItIsExplicitlyRequested()
     QVERIFY(shown.contains(QStringLiteral("0:Live")));
     QVERIFY(shown.contains(QStringLiteral("0:Archive")));
 
-    // ...and the note INSIDE it must be reachable, indented beneath its folder.
-    // Asserting only that the folder row is absent passes even when archived notes are
-    // emitted nowhere at all, which makes archiving a one-way door.
-    QVERIFY2(shown.contains(QStringLiteral("1:Filed")),
-             qPrintable(QStringLiteral("archived note unreachable; rows were: ")
-                        + shown.join(QStringLiteral(", "))));
+    // It begins as a compact filing index just like every other folder; opening it makes
+    // its archived note reachable, rather than a one-way destination.
+    QVERIFY(!shown.contains(QStringLiteral("1:Filed")));
+    model.setExpanded(QStringLiteral("Archive"), true);
+    const QStringList opened = outline(model);
+    QVERIFY2(opened.contains(QStringLiteral("1:Filed")),
+             qPrintable(QStringLiteral("archived note unreachable after opening Archive; rows were: ")
+                        + opened.join(QStringLiteral(", "))));
     // It is still flagged, so the panel draws its "Archived" pill and offers Restore.
     int filedRow = -1;
     for (int r = 0; r < model.rowCount(); ++r) {

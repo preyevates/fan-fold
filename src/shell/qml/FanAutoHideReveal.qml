@@ -12,6 +12,8 @@ Item {
 
     required property bool hidden
     property color ink: "#202020"
+    // The deck owns its state; this affordance merely reports the hover which wakes it.
+    signal revealRequested()
 
     width: 20
     height: 36
@@ -22,6 +24,15 @@ Item {
 
     Behavior on opacity {
         NumberAnimation { duration: 120 }
+    }
+
+    // Do not rely on an item behind this painted handle to receive hover. On some platforms
+    // that leaves the auto-hidden deck as an inert corner after the idle timer fires.
+    HoverHandler {
+        onHoveredChanged: {
+            if (hovered && root.hidden)
+                root.revealRequested()
+        }
     }
 
     Rectangle {

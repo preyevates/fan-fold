@@ -65,7 +65,7 @@ QVariant LibraryModel::data(const QModelIndex &index, int role) const
     case PathRole: return row.path;
     case DepthRole: return row.depth;
     case IsFolderRole: return row.isFolder;
-    case ExpandedRole: return row.isFolder && !m_collapsed.contains(row.path);
+    case ExpandedRole: return row.isFolder && m_expanded.contains(row.path);
     case HasChildrenRole: return row.isFolder && row.noteCount > 0;
     case NoteCountRole: return row.noteCount;
     case DocumentIdRole: return row.documentId;
@@ -134,20 +134,18 @@ QString LibraryModel::folderForRow(int row) const
     return parent == QStringLiteral(".") ? QString() : parent;
 }
 
-/** Folders are open by default, so this records an explicit collapse rather than an
- *  explicit expand: a newly created folder shows its notes the moment it appears. */
 void LibraryModel::setExpanded(const QString &folder, bool expanded)
 {
     if (folder.isEmpty()) {
         return;
     }
-    if (expanded == !m_collapsed.contains(folder)) {
+    if (expanded == m_expanded.contains(folder)) {
         return;
     }
     if (expanded) {
-        m_collapsed.remove(folder);
+        m_expanded.insert(folder);
     } else {
-        m_collapsed.insert(folder);
+        m_expanded.remove(folder);
     }
     rebuild();
 }
@@ -159,7 +157,7 @@ void LibraryModel::toggle(int row)
     }
     const Row &at = m_rows.at(row);
     if (at.isFolder) {
-        setExpanded(at.path, m_collapsed.contains(at.path));
+        setExpanded(at.path, !m_expanded.contains(at.path));
     }
 }
 
@@ -168,8 +166,8 @@ void LibraryModel::revealFolder(const QString &folder)
     const QStringList chain = ancestryOf(folder);
     bool changed = false;
     for (const QString &step : chain) {
-        if (m_collapsed.contains(step)) {
-            m_collapsed.remove(step);
+        if (!m_expanded.contains(step)) {
+            m_expanded.insert(step);
             changed = true;
         }
     }
@@ -309,11 +307,10 @@ void LibraryModel::appendFolder(QList<Row> &rows, const QString &folder, int dep
             || child.startsWith(QStringLiteral("Archive/"));
         row.noteCount = notesUnder(child, childFolders, folderNotes);
         rows.append(row);
-        // Open by default: a tree whose folders all start collapsed shows a bare list of
-        // folder names and hides every note, which reads as a broken library. An
-        // explicitly collapsed folder stays collapsed (m_collapsed), so the default is
-        // "show the notes" and the override is remembered.
-        if (!m_collapsed.contains(child)) {
+        // This is the lazy boundary: descendants enter the flat view only after their
+        // own folder was opened. A deep library therefore starts as a legible index rather
+        // than a fully materialised wall of rows.
+        if (m_expanded.contains(child)) {
             appendFolder(rows, child, depth + 1, childFolders, folderNotes);
         }
     }

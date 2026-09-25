@@ -1802,6 +1802,12 @@ PlasmaCore.Dialog {
             z: fanTrigger.z+1
             hidden: dialog.fanHiddenIdle
             ink: dialog.ink
+            onRevealRequested: {
+                // The visible handle owns its hover rather than hoping the non-clicking
+                // trigger behind it receives the event after idle.
+                fanHold.stop()
+                dialog.fanHoverOpen = true
+            }
         }
         // The Library: browse the whole folder tree, including Archive, and put an archived
         // note back. Built from the same in-card panel idiom as File details above. Rows
@@ -1920,6 +1926,11 @@ PlasmaCore.Dialog {
                         color: dialog.derivedTone(dialog.paperColor, 0.32)
                     }
                 }
+                // A scrollbar provides position, not context. Keep the current folder legible
+                // while rows pass beneath the panel's compact breadcrumb.
+                readonly property int scrollRow: indexAt(10, Math.max(0, contentY + 10))
+                readonly property string scrollFolder: scrollRow >= 0
+                    ? libraryModel.folderForRow(scrollRow) : ""
                 delegate: Item {
                     id: libraryRow
                     required property int index
@@ -1980,8 +1991,8 @@ PlasmaCore.Dialog {
                         anchors.verticalCenter: parent.verticalCenter
                         width: 16; height: 16
                         smooth: true
-                        // ABOVE libraryRowArea, which is declared later and anchors.fill
-                        // the whole row: without this the twisty never sees a press.
+                        // The icon is purely a state indicator. One press anywhere on the
+                        // folder row expands or collapses it; there is no hidden second target.
                         z: 3
                         opacity: libraryRow.archived ? 0.55 : 0.9
                         source: libraryRow.isFolder
@@ -1989,14 +2000,6 @@ PlasmaCore.Dialog {
                             : (dialog.iconSourceFor(dialog.iconOf(libraryRow.documentId)) !== ""
                                 ? dialog.iconSourceFor(dialog.iconOf(libraryRow.documentId))
                                 : "text-markdown")
-                        MouseArea {
-                            objectName: "library-row-twisty"
-                            anchors.fill: parent
-                            anchors.margins: -4
-                            enabled: libraryRow.isFolder
-                            cursorShape: Qt.PointingHandCursor
-                            onClicked: libraryModel.toggle(libraryRow.index)
-                        }
                     }
                     Text {
                         id: rowLabel
@@ -2055,12 +2058,10 @@ PlasmaCore.Dialog {
                         folderPath: libraryRow.path
                         documentId: libraryRow.documentId
                         onFolderRequested: function(folderPath) {
-                            // Opening a folder IS the scoping gesture: the fan becomes that
-                            // folder's notes. Expanding the subtree is the folder ICON's job
-                            // (rowIcon above), so one press never does both.
-                            libraryModel.revealFolder(folderPath)
-                            dialog.scopeToFolder(folderPath)
-                            dialog.libraryOpen = false
+                            // A folder is a disclosure control in the Library. The model
+                            // projects its children only while expanded, making this the lazy
+                            // loading boundary rather than a cosmetic arrow.
+                            libraryModel.toggle(libraryRow.index)
                         }
                         onDocumentRequested: function(documentId) {
                             dialog.openFromLibrary(documentId)
@@ -2071,14 +2072,34 @@ PlasmaCore.Dialog {
                         ? (libraryRow.archived
                             ? ("Archive folder " + libraryRow.name + "; archived notes are never on the fan")
                             : ("Folder " + libraryRow.name
-                               + (libraryRow.path === dialog.openFolder
-                                    ? "; open on the fan now"
-                                    : "; open it to show its notes on the fan")))
+                               + (libraryRow.expanded ? "; collapse" : "; expand")))
                         : (libraryRow.archived
                             ? (libraryRow.armed
                                 ? ("Archived note " + libraryRow.name + "; press again to restore it to its original folder and open it")
                                 : ("Archived note " + libraryRow.name + "; restore and open, press twice"))
                             : ("Note " + libraryRow.name + "; open"))
+                }
+            }
+            Rectangle {
+                id: libraryScrollFolderIndicator
+                readonly property string folder: libraryList.scrollFolder
+                visible: libraryList.contentHeight > libraryList.height
+                         && libraryList.contentY > 2 && folder !== ""
+                x: libraryList.x + 6; y: libraryList.y + 6
+                width: Math.min(libraryList.width - 18, folderLabel.implicitWidth + 20)
+                height: 20; radius: 10; z: 12
+                color: Qt.rgba(dialog.ink.r, dialog.ink.g, dialog.ink.b, 0.16)
+                border.width: 1
+                border.color: Qt.rgba(dialog.ink.r, dialog.ink.g, dialog.ink.b, 0.26)
+                Text {
+                    id: folderLabel
+                    anchors.centerIn: parent
+                    width: parent.width - 12
+                    elide: Text.ElideMiddle
+                    horizontalAlignment: Text.AlignHCenter
+                    font.family: dialog.noteFont; font.pixelSize: 10; font.weight: Font.DemiBold
+                    color: dialog.ink
+                    text: libraryScrollFolderIndicator.folder
                 }
             }
         }

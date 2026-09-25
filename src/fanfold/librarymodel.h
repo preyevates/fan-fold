@@ -63,7 +63,7 @@ public:
     /** Expand or collapse one folder. The state is remembered even while the folder is
      * itself hidden inside a collapsed parent. */
     Q_INVOKABLE void setExpanded(const QString &folder, bool expanded);
-    Q_INVOKABLE bool isExpanded(const QString &folder) const { return !m_collapsed.contains(folder); }
+    Q_INVOKABLE bool isExpanded(const QString &folder) const { return m_expanded.contains(folder); }
     /** Re-walk the library directory and re-emit rows. PUBLIC because the QML panel
      *  calls it on open — Q_INVOKABLE in a private section is silently ignored by moc,
      *  which surfaced as a TypeError only at runtime. */
@@ -98,9 +98,9 @@ private:
 
     DocumentCollection *m_collection = nullptr;
     QList<Row> m_rows;
-    /** Folders the user explicitly COLLAPSED. Empty means every folder is open,
-     *  which is the default: a collapsed-by-default tree hid every note. */
-    QSet<QString> m_collapsed;
+    /** Folders explicitly opened for this library view. Empty gives the compact index:
+     *  folder names and root notes, without eagerly creating every descendant row. */
+    QSet<QString> m_expanded;
     QString m_currentKey;
     int m_currentRow = -1;
     bool m_showArchive = false;
