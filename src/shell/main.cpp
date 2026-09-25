@@ -23,6 +23,7 @@
 #include <QRegularExpression>
 #include <QApplication>
 #include <QIcon>
+#include <KDBusService>
 #include <QMenu>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
@@ -61,6 +62,8 @@ signals:
     void showRequested();
     /** Quit through the ordinary close guard, never a raw exit. */
     void quitRequested();
+    /** Reveal the fan without toggling it closed: a second launch asked to see it. */
+    void revealRequested();
 };
 
 /**
@@ -627,6 +630,18 @@ int main(int argc, char **argv)
     parser.addOption(stateOption);
     parser.process(application);
 
+    // One dock per session. A second launch finds this name taken, asks the running
+    // instance to activate, and exits 0 inside the constructor, before it can open the
+    // collection or create a window. The bus name is built from the organization domain
+    // and application name; "Fan Fold" contains a space, which a D-Bus name cannot, so
+    // the name is borrowed only while the service registers. QSettings and
+    // QStandardPaths read the application name at call time, so the real name is back
+    // before anything resolves a path. The borrowed name matches the desktop file id.
+    QCoreApplication::setOrganizationDomain(QStringLiteral("preyevates.github.io"));
+    QCoreApplication::setApplicationName(QStringLiteral("FanFold"));
+    KDBusService uniqueInstance(KDBusService::Unique);
+    QCoreApplication::setApplicationName(QStringLiteral("Fan Fold"));
+
     DocumentCollection collection(parser.value(stateOption));
 
     // No default notes location is invented: the folder is the one supplied or the one
@@ -746,6 +761,11 @@ int main(int argc, char **argv)
                          });
         trayIcon.show();
     }
+
+    // A later launch's arguments are not applied: re-rooting a running library from a
+    // command line would bypass the folder chooser's persistence rules.
+    QObject::connect(&uniqueInstance, &KDBusService::activateRequested, &tray,
+                     &TrayBridge::revealRequested);
 
     // An ordinary close flushes; a forced termination still has the recovery journal.
     QObject::connect(&application, &QCoreApplication::aboutToQuit, &collection,

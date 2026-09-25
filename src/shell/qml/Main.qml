@@ -703,6 +703,15 @@ PlasmaCore.Dialog {
     /** Reasons the deck must stay spread wherever the pointer currently is: an open note
      * card, an open swatch menu, or a drag in progress. */
     property bool fanHoldsOpen: dialog.expanded || dialog.paletteOpen || dialog.draggingNoteId !== ""
+        || dialog.fanRevealHeld
+    /** A second launch asked to SEE the notes. The pointer is somewhere else, so the hover
+     * hysteresis alone would fold the deck again 200 ms later; hold it spread until the
+     * pointer arrives (hover then owns it) or a few seconds pass unvisited. */
+    property bool fanRevealHeld: false
+    property Timer fanRevealTimer: Timer {
+        interval: 5000
+        onTriggered: dialog.fanRevealHeld = false
+    }
     property bool fanSpread: dialog.fanHoverOpen || dialog.fanHoldsOpen
     /** Auto-hide: with the setting on and nothing using the deck, the sticks fade out and only
      * a small reveal glyph stays in the corner. The EDGE remains live throughout — the trigger
@@ -733,8 +742,9 @@ PlasmaCore.Dialog {
     property int fanSpreadDuration: dialog.animationFactor === 0 ? 0 : Kirigami.Units.longDuration
     property int fanLiftDuration: dialog.animationFactor === 0 ? 0 : Kirigami.Units.shortDuration
     onFanPointerInsideChanged: {
-        if(dialog.fanPointerInside) { fanHold.stop(); dialog.fanHoverOpen = true }
-        else fanHold.restart()
+        if(dialog.fanPointerInside) {
+            fanHold.stop(); dialog.fanHoverOpen = true; dialog.fanRevealHeld = false
+        } else fanHold.restart()
     }
     onFanHoldsOpenChanged: if(!dialog.fanHoldsOpen && !dialog.fanPointerInside) fanHold.restart()
     property Timer fanHoldTimer: Timer {
@@ -2597,6 +2607,16 @@ PlasmaCore.Dialog {
             }
         }
         function onQuitRequested() { dialog.requestClose() }
+        function onRevealRequested() {
+            // A second launch means "show me the notes", so this only ever opens. An open
+            // card is already the most revealed state and is left alone.
+            if(dialog.expanded) return
+            dialog.visible = true
+            dialog.fanHoverOpen = true
+            dialog.fanRevealHeld = true
+            dialog.fanRevealTimer.restart()
+            alignment.restart()
+        }
     }
 
     /** The one folder chooser: welcome panel and Settings both open THIS dialog, and

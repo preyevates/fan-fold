@@ -3,6 +3,7 @@ cmake_minimum_required(VERSION 3.22)
 include(GNUInstallDirs)
 
 find_package(Qt6 6.8 REQUIRED COMPONENTS Core Gui Qml Quick Widgets)
+find_package(KF6DBusAddons 6.0 REQUIRED)
 
 # The shipped shell: the QML presentation layer over the Fan Fold document engine.
 #
@@ -28,6 +29,7 @@ target_link_libraries(fanfold PRIVATE
     Qt6::Core
     Qt6::Gui
     Qt6::Qml
+    KF6::DBusAddons
     Qt6::Quick
     Qt6::Widgets
 )

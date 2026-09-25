@@ -6,6 +6,7 @@ Build-Depends:
  debhelper-compat (= 13),
  cmake (>= 3.22),
  g++,
+ libkf6dbusaddons-dev,
  qt6-base-dev (>= 6.8),
  qt6-declarative-dev (>= 6.8),
 Standards-Version: 4.7.0
