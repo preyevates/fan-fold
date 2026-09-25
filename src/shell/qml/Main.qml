@@ -361,6 +361,14 @@ PlasmaCore.Dialog {
         if(notesStore.searchModel.query !== "") notesStore.searchModel.query = ""
         if(librarySearch.text !== "") librarySearch.text = ""
     }
+    function showSearch(activate) {
+        dialog.toggleLibrary(true)
+        if(activate !== false) dialog.requestActivate()
+        Qt.callLater(function() {
+            librarySearch.forceActiveFocus(Qt.ShortcutFocusReason)
+            librarySearch.selectAll()
+        })
+    }
     // Selection change: disarm any destructive control (see confirmArchiveId) and re-read
     // the file facts. One handler, because QML allows only one per signal.
     onSelectedIdChanged: { dialog.confirmArchiveId = ""; dialog.confirmTrashId = ""; dialog.confirmFolderColour = false; refreshInfo() }
@@ -665,6 +673,12 @@ PlasmaCore.Dialog {
     /** Top edge of SLOT 0's stick: the bottom-most stick, directly above the "+".
      * Note 1 sits nearest the "+" and the fan grows upward, away from it. */
     property int fanBaseY: dialog.fanSurfaceH - dialog.fanBottomInset - dialog.fanPlusZone - dialog.fanTabLength
+    /** Search sits beyond the farthest possible stick. This uses spread pitch even while
+     *  collapsed, so hovering never asks the dock window to resize around the button. */
+    property int fanSearchSize: 26
+    property int fanSearchTop: dialog.fanBaseY
+        - Math.max(0, dialog.order.length - 1)*dialog.fanSpreadPitch
+        - dialog.fanSearchSize - 8
     /** Top of the clickable strip: just above where the highest stick CAN reach, or just
      * above the "+" when the library is empty.
      *
@@ -673,9 +687,11 @@ PlasmaCore.Dialog {
      * the hover strip outside the window, where the compositor clips it, so only the bottom
      * sliver of the screen edge answers hover. Reserving the spread extent also keeps the
      * window from resizing mid-hover, which is what makes the deck jitter. */
-    property int fanMaskTop: dialog.order.length > 0
+    property int fanDeckMaskTop: dialog.order.length > 0
         ? Math.max(0, dialog.fanBaseY - (dialog.order.length - 1)*dialog.fanSpreadPitch - 10)
         : Math.max(0, dialog.fanSurfaceH - dialog.fanBottomInset - dialog.fanPlusZone - 12)
+    property int fanMaskTop: dialog.libraryIsEmpty
+        ? dialog.fanDeckMaskTop : Math.min(dialog.fanDeckMaskTop, Math.max(0, dialog.fanSearchTop - 4))
     /** The WINDOW is only as tall as the part of the lane actually in use.
      *
      * `fanSurfaceH` is the full work-area height and must stay the coordinate space the fan
@@ -688,7 +704,7 @@ PlasmaCore.Dialog {
     /** With an EMPTY fan the welcome panel is on screen, and it is a full card-sized surface
      *  rather than a strip. Masking down to a nonexistent deck puts its buttons below the
      *  fold, which strands an archived-everything library with no route back. */
-    property int fanVisibleTop: (dialog.expanded || dialog.order.length === 0)
+    property int fanVisibleTop: (dialog.expanded || dialog.libraryOpen || dialog.order.length === 0)
         ? 0 : dialog.fanMaskTop
     /** The outward hover lift, READ from the shared contract rather than copied, and the lane
      * the window reserves for it.
@@ -737,8 +753,8 @@ PlasmaCore.Dialog {
     property bool fanHoverOpen: false
     /** Reasons the deck must stay spread wherever the pointer currently is: an open note
      * card, an open swatch menu, or a drag in progress. */
-    property bool fanHoldsOpen: dialog.expanded || dialog.paletteOpen || dialog.draggingNoteId !== ""
-        || dialog.fanRevealHeld
+    property bool fanHoldsOpen: dialog.expanded || dialog.libraryOpen || dialog.searchActive
+        || dialog.paletteOpen || dialog.draggingNoteId !== "" || dialog.fanRevealHeld
     /** A second launch asked to SEE the notes. The pointer is somewhere else, so the hover
      * hysteresis alone would fold the deck again 200 ms later; hold it spread until the
      * pointer arrives (hover then owns it) or a few seconds pass unvisited. */
@@ -1026,7 +1042,7 @@ PlasmaCore.Dialog {
             // the BOTTOM of the work area — the deck's own anchor; centring a short window
             // would float the fan into the middle of the screen. Expanded, it is the full
             // surface again and centring keeps the card where it belongs.
-            dialog.y = dialog.expanded || dialog.order.length === 0
+            dialog.y = dialog.expanded || dialog.libraryOpen || dialog.order.length === 0
                 ? dialog.availY + Math.max(0, Math.round((dialog.availH-dialog.height)/2))
                 : dialog.availY + Math.max(0, dialog.availH - dialog.height)
         }
@@ -1045,7 +1061,8 @@ PlasmaCore.Dialog {
         // An empty library takes the card's own width so the empty state has room to speak.
         // Otherwise the window is one 48 px fan lane over a transparent background —
         // nothing to see, which reads as a failed application.
-        width: (dialog.expanded || dialog.order.length === 0) ? dialog.cardWidth+32 : dialog.fanCollapsedWidth
+        width: (dialog.expanded || dialog.libraryOpen || dialog.order.length === 0)
+            ? dialog.cardWidth+32 : dialog.fanCollapsedWidth
         // Only the occupied strip, so the empty column above the deck is not part of the
         // window and cannot swallow clicks meant for the app underneath. Children keep
         // using fanSurfaceH coordinates and are shifted up by the same offset below.
@@ -1100,6 +1117,10 @@ PlasmaCore.Dialog {
         property Shortcut newNoteShortcut: Shortcut {
             sequence: "Ctrl+N"
             onActivated: dialog.createNoteOnFan(false)
+        }
+        property Shortcut findNoteShortcut: Shortcut {
+            sequence: "Ctrl+F"
+            onActivated: dialog.showSearch(false)
         }
         // The WebEngine rectangle stays inside the paper rounded perimeter at every bound.
         Rectangle {
@@ -1898,7 +1919,7 @@ PlasmaCore.Dialog {
             // Also shown when the FAN is empty but the library is not. `dialog.expanded`
             // means "a note is open in the card", which can never be true once every note
             // is archived or pinned — and that is exactly the state with no way out.
-            visible: dialog.libraryOpen && (dialog.expanded || dialog.order.length === 0); z: 401
+            visible: dialog.libraryOpen; z: 401
             // The row list is the whole point of the panel, and a 300 px ceiling shows ~11
             // rows while the card below sits empty. It takes the room it needs and stops at
             // the footer.
@@ -2669,6 +2690,33 @@ PlasmaCore.Dialog {
             Rectangle { anchors.centerIn: parent; width: 2; height: 14; radius: 1
                         color: dialog.libraryIsEmpty ? dialog.neutralText : dialog.ink }
             onClicked: dialog.createNoteOnFan(true)
+        }
+        // Whole-library search lives at the far end of the deck, opposite creation. Its
+        // reserved spread-pitch position is outside the hover strip and never moves on hover.
+        QuietButton {
+            objectName: "fan-search"
+            x: surface.width - dialog.fanTabWidth
+               + Math.round((dialog.fanTabWidth - dialog.fanSearchSize)/2)
+            y: dialog.fanSearchTop - dialog.fanVisibleTop
+            visible: !dialog.libraryIsEmpty && !dialog.libraryOpen && !dialog.fanHiddenIdle
+            size: dialog.fanSearchSize; iconSize: 0
+            ink: dialog.ink
+            explanation: "Search notes · Ctrl+F"
+            z: 60
+            Item {
+                anchors.centerIn: parent
+                width: 16; height: 16
+                Rectangle {
+                    x: 1; y: 1; width: 9; height: 9; radius: 5
+                    color: "transparent"; border.width: 2; border.color: dialog.ink
+                }
+                Rectangle {
+                    x: 9; y: 10; width: 7; height: 2; radius: 1
+                    rotation: 45; transformOrigin: Item.Left
+                    color: dialog.ink
+                }
+            }
+            onClicked: dialog.showSearch(true)
         }
         // No corner landmark while hidden. A reveal glyph collides with the fan's "+" and
         // duplicates what the edge already does: the trigger strip spans the lane, so
