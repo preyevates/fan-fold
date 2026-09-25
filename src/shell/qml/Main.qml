@@ -489,6 +489,7 @@ PlasmaCore.Dialog {
      *  verb on Wayland has no xdg-activation token, and requesting focus without one makes
      *  KWin paint a "demands attention" frame around the dock instead. */
     function openNote(index, activate) {
+        ensureFanIndexVisible(index)
         selected = index; expanded = true; loaded = true
         titleField.reset()
         if(activate !== false) dialog.requestActivate()
@@ -647,7 +648,9 @@ PlasmaCore.Dialog {
     /** A tab label is that note's own ink, always. The retired global fanLabelColor is not
      * read here, so a value left in an old appearance.json cannot reach the label. */
     function labelInkOf(id) { return dialog.inkOf(id) }
-    property int fanTopInset: 42
+    /** Furthest screen-edge coordinate the bounded deck viewport may reserve. A deck that
+     *  fits keeps its natural, lower top; overflow stops here instead of growing the dock. */
+    property int fanViewportLimitTop: 42
     /** Clearance between the lane's bottom and the SCREEN's edge. On Wayland a client is
      *  never told the work area — availH is the full screen height — so this inset must
      *  clear the task manager on its own. 64 px clears Plasma's default 44 px panel with
@@ -673,22 +676,25 @@ PlasmaCore.Dialog {
     /** Top edge of SLOT 0's stick: the bottom-most stick, directly above the "+".
      * Note 1 sits nearest the "+" and the fan grows upward, away from it. */
     property int fanBaseY: dialog.fanSurfaceH - dialog.fanBottomInset - dialog.fanPlusZone - dialog.fanTabLength
-    /** Search sits beyond the farthest possible stick. This uses spread pitch even while
-     *  collapsed, so hovering never asks the dock window to resize around the button. */
+    /** Search is pinned at the far end of the bounded viewport. A short deck keeps the
+     *  natural placement it had before scrolling; a long deck stops at the named limit. */
     property int fanSearchSize: 26
-    property int fanSearchTop: dialog.fanBaseY
+    property int fanNaturalSearchTop: dialog.fanBaseY
         - Math.max(0, dialog.order.length - 1)*dialog.fanSpreadPitch
         - dialog.fanSearchSize - 8
-    /** Top of the clickable strip: just above where the highest stick CAN reach, or just
-     * above the "+" when the library is empty.
+    property int fanSearchTop: Math.max(dialog.fanViewportLimitTop, dialog.fanNaturalSearchTop)
+    property int fanDeckViewportTop: dialog.fanSearchTop + dialog.fanSearchSize + 8
+    property int fanDeckViewportBottom: dialog.fanBaseY + dialog.fanTabLength
+    property int fanDeckViewportHeight: Math.max(0,
+        dialog.fanDeckViewportBottom - dialog.fanDeckViewportTop)
+    /** Top of the clickable strip: the search/viewport boundary, or just above the "+"
+     * when the library is empty.
      *
-     * Measured against `fanSpreadPitch`, never the live pitch. Sizing the window to the
-     * COLLAPSED deck while `fanTrigger` computes its top from the SPREAD pitch leaves most of
-     * the hover strip outside the window, where the compositor clips it, so only the bottom
-     * sliver of the screen edge answers hover. Reserving the spread extent also keeps the
-     * window from resizing mid-hover, which is what makes the deck jitter. */
+     * A short deck reserves its natural spread extent; an overflowing deck reserves the
+     * fixed viewport. Neither follows the collapsed pitch or scroll offset, so hover and
+     * scrolling never resize the window under the pointer. */
     property int fanDeckMaskTop: dialog.order.length > 0
-        ? Math.max(0, dialog.fanBaseY - (dialog.order.length - 1)*dialog.fanSpreadPitch - 10)
+        ? Math.max(0, dialog.fanSearchTop - 4)
         : Math.max(0, dialog.fanSurfaceH - dialog.fanBottomInset - dialog.fanPlusZone - 12)
     property int fanMaskTop: dialog.libraryIsEmpty
         ? dialog.fanDeckMaskTop : Math.min(dialog.fanDeckMaskTop, Math.max(0, dialog.fanSearchTop - 4))
@@ -718,19 +724,45 @@ PlasmaCore.Dialog {
     property int fanLiftReserve: dialog.fanLiftDistance + 4
     /** One stick plus that reserve: the width of the collapsed edge dock. */
     property int fanCollapsedWidth: dialog.fanTabWidth + dialog.fanLiftReserve
-    /** Largest pitch that still keeps the last stick inside the currently available height. */
-    property int fanPitchLimit: dialog.order.length > 1
-        ? Math.max(12, Math.floor((dialog.fanBaseY - 6)/(dialog.order.length-1)))
-        : Math.round(dialog.appearance.fanSpacing)
-    /** The pitch the global fanSpacing setting asks for, clamped to the available height.
-     * An existing configuration keeps exactly the fan it had, now reached by hovering. */
-    property int fanSpreadPitch: Math.max(12, Math.min(Math.round(dialog.appearance.fanSpacing), dialog.fanPitchLimit))
+    /** The user's pitch is invariant with note count. Overflow moves through the viewport
+     *  instead of silently squeezing the deck. */
+    property int fanSpreadPitch: Math.max(12, Math.round(dialog.appearance.fanSpacing))
     /** Resting pitch of the untouched deck: a tight stack whose sticks only peek past one
      * another, so the quiet edge stays quiet. A design constant rather than a second
      * setting, and never wider than the spread pitch it has to fit inside. */
     property int fanCompactPitch: Math.min(14, dialog.fanSpreadPitch)
     /** The ONE live pitch every consumer reads: layout, shingled hit length, drag rounding. */
     property int fanPitch: dialog.fanSpread ? dialog.fanSpreadPitch : dialog.fanCompactPitch
+    property real fanScrollOffset: 0
+    /** Wheel delivery can move the accepting stick out from under a stationary pointer.
+     * Keep the deck open long enough to identify and click the newly revealed note; normal
+     * hover takes ownership sooner when the pointer moves. */
+    property bool fanScrollActive: false
+    property Timer fanScrollTimer: Timer {
+        interval: 5000
+        onTriggered: dialog.fanScrollActive = false
+    }
+    readonly property real fanScrollMaximum: LayoutContract.fanScrollMaximum(
+        dialog.order.length, dialog.fanSpreadPitch, dialog.fanTabLength,
+        dialog.fanDeckViewportHeight)
+    onFanScrollMaximumChanged: dialog.fanScrollOffset = Math.min(
+        dialog.fanScrollOffset, dialog.fanScrollMaximum)
+    function scrollFanBy(angleY, pixelY) {
+        if(dialog.fanScrollMaximum <= 0) return
+        var delta = pixelY !== 0 ? pixelY
+                                : angleY/120*Math.max(36, dialog.fanSpreadPitch)
+        dialog.fanScrollOffset = Math.max(0, Math.min(dialog.fanScrollMaximum,
+                                                       dialog.fanScrollOffset + delta))
+        dialog.fanScrollActive = true
+        dialog.fanScrollTimer.restart()
+        dialog.fanHoverOpen = true
+    }
+    function ensureFanIndexVisible(index) {
+        dialog.fanScrollOffset = LayoutContract.fanOffsetForIndex(
+            index, dialog.fanScrollOffset, dialog.fanScrollMaximum,
+            dialog.fanBaseY, dialog.fanSpreadPitch, dialog.fanTabLength,
+            dialog.fanDeckViewportTop, dialog.fanDeckViewportHeight)
+    }
     /** A vertical offset that is inside every shingled stick's own hit area at any pitch. */
     property int fanHitOffset: Math.max(4, Math.min(20, Math.round(dialog.fanPitch/2)))
     /** Slot Y in FULL-SURFACE coordinates — the space fan geometry is defined in. */
@@ -748,13 +780,15 @@ PlasmaCore.Dialog {
     property string draggingNoteId: ""
     /** Hover is reported by the lane trigger OR by a stick. The two overlap, and Qt is not
      * required to deliver one hover position to both, so either source is enough. */
-    property bool fanPointerInside: fanTrigger.containsMouse || dialog.hoveredNoteId !== ""
+    property bool fanPointerInside: fanTrigger.containsMouse || fanViewportHover.hovered
+        || dialog.hoveredNoteId !== ""
     /** Latched open by hover, released only by the hysteresis timer below. */
     property bool fanHoverOpen: false
     /** Reasons the deck must stay spread wherever the pointer currently is: an open note
      * card, an open swatch menu, or a drag in progress. */
     property bool fanHoldsOpen: dialog.expanded || dialog.libraryOpen || dialog.searchActive
         || dialog.paletteOpen || dialog.draggingNoteId !== "" || dialog.fanRevealHeld
+        || dialog.fanScrollActive
     /** A second launch asked to SEE the notes. The pointer is somewhere else, so the hover
      * hysteresis alone would fold the deck again 200 ms later; hold it spread until the
      * pointer arrives (hover then owns it) or a few seconds pass unvisited. */
@@ -764,6 +798,7 @@ PlasmaCore.Dialog {
         onTriggered: dialog.fanRevealHeld = false
     }
     property bool fanSpread: dialog.fanHoverOpen || dialog.fanHoldsOpen
+    onFanSpreadChanged: if(!dialog.fanSpread) dialog.fanScrollOffset = 0
     /** Auto-hide: with the setting on and nothing using the deck, the sticks fade out and only
      * a small reveal glyph stays in the corner. The EDGE remains live throughout — the trigger
      * strip still catches hover, which sets fanSpread, which unhides — so revealing costs a
@@ -1885,15 +1920,19 @@ PlasmaCore.Dialog {
             // With auto-hide the target reaches the small painted reveal handle at the bottom
             // of this otherwise trimmed window. That keeps the affordance discoverable without
             // turning a transparent, full-screen edge lane into a click-eating window.
-            // Otherwise the strip spans from the TOP-most stick down to the window's bottom
-            // edge, "+" included.
+            // Otherwise the strip spans from the bounded deck viewport down to the window's
+            // bottom edge, "+" included. Its extent never follows scroll position.
             y: dialog.appearance.fanAutoHide === true ? 0
-               : Math.max(0, dialog.fanBaseY - (dialog.order.length-1)*dialog.fanSpreadPitch - dialog.fanVisibleTop)
+               : Math.max(0, dialog.fanDeckViewportTop - dialog.fanVisibleTop)
             width: dialog.fanTabWidth+dialog.fanLiftReserve
             height: surface.height - y
             z: 50
             hoverEnabled: true
             acceptedButtons: Qt.NoButton
+            onWheel: function(wheel) {
+                dialog.scrollFanBy(wheel.angleDelta.y, wheel.pixelDelta.y)
+                wheel.accepted = true
+            }
             Accessible.role: Accessible.Grouping
             Accessible.name: "Note deck; hover the edge to spread the notes"
         }
@@ -2276,11 +2315,26 @@ PlasmaCore.Dialog {
                 }
             }
         }
-        // Upright, flat, overlapping sticks. Reorder moves identity, never content.
-        Repeater {
-            id: tabRepeater
-            model: dialog.order
-            delegate: Item {
+        // Upright, flat, overlapping sticks. Reorder moves identity, never content. The
+        // viewport clips only the deck axis; its width includes the permanent lift reserve.
+        Item {
+            id: fanDeckViewport
+            objectName: "fan-deck-viewport"
+            x: 0
+            y: dialog.fanDeckViewportTop - dialog.fanVisibleTop
+            width: surface.width
+            height: dialog.fanDeckViewportHeight
+            clip: true
+            z: 100
+            // A passive handler observes the viewport independently of whichever shingled
+            // MouseArea owns the wheel event. When scrolling moves that stick away without
+            // moving the physical pointer, the deck must not mistake the synthetic exit for
+            // leaving the lane and fold itself before the next click.
+            HoverHandler { id: fanViewportHover }
+            Repeater {
+                id: tabRepeater
+                model: dialog.order
+                delegate: Item {
                 id: tab
                 required property int index
                 required property string modelData
@@ -2306,14 +2360,13 @@ PlasmaCore.Dialog {
                  * Applied to the FACE below and never to this item, so the hit target can
                  * not slide out from under the pointer that caused the lift. */
                 property var lift: LayoutContract.stickLift("right", current, hovered)
-                x: surface.width-dialog.fanTabWidth
-                // -fanVisibleTop: geometry is defined against the full work-area surface,
-                // but collapsed the WINDOW is only the occupied strip, so every child shifts
-                // up by the amount the window was trimmed from the top.
-                y: dialog.fanBaseY - index*dialog.fanPitch + (dragging ? offset : 0) - dialog.fanVisibleTop
+                x: fanDeckViewport.width-dialog.fanTabWidth
+                y: dialog.fanBaseY - index*dialog.fanPitch + dialog.fanScrollOffset
+                   + (dragging ? offset : 0) - dialog.fanDeckViewportTop
                 width: dialog.fanTabWidth; height: dialog.fanTabLength
                 rotation: 0
-                z: dragging ? 400 : LayoutContract.stickLayer(index,current,hovered)
+                z: dragging ? 4*dialog.order.length+400
+                            : LayoutContract.stickLayer(index,current,hovered,dialog.order.length)
                 // Auto-hide: sticks fade rather than unload, so the deck's identity,
                 // order and geometry survive a hide/reveal untouched.
                 opacity: dialog.fanHiddenIdle ? 0 : 1
@@ -2493,10 +2546,34 @@ PlasmaCore.Dialog {
                     // erase the highlight the new stick has already claimed.
                     onEntered: dialog.hoveredNoteId = tab.noteId
                     onExited: if(dialog.hoveredNoteId===tab.noteId) dialog.hoveredNoteId = ""
+                    onWheel: function(wheel) {
+                        dialog.scrollFanBy(wheel.angleDelta.y, wheel.pixelDelta.y)
+                        wheel.accepted = true
+                    }
                     Accessible.role: Accessible.Button
                     Accessible.name: tab.accessibleName
                 }
             }
+        }
+        }
+        // Minimal ink cues at the clipped deck edges. The far cue is present at rest for an
+        // overflowing folder; once scrolled, the near cue shows the notes left behind.
+        Item {
+            visible: dialog.fanScrollMaximum > 0
+                     && dialog.fanScrollOffset < dialog.fanScrollMaximum - 0.5
+            x: surface.width - dialog.fanTabWidth/2 - width/2
+            y: dialog.fanDeckViewportTop - dialog.fanVisibleTop + 2
+            width: 12; height: 7; z: 220
+            Rectangle { x: 1; y: 3; width: 7; height: 1; rotation: -35; color: dialog.ink }
+            Rectangle { x: 5; y: 3; width: 7; height: 1; rotation: 35; color: dialog.ink }
+        }
+        Item {
+            visible: dialog.fanScrollOffset > 0.5
+            x: surface.width - dialog.fanTabWidth/2 - width/2
+            y: dialog.fanDeckViewportBottom - dialog.fanVisibleTop - height - 2
+            width: 12; height: 7; z: 220
+            Rectangle { x: 1; y: 3; width: 7; height: 1; rotation: 35; color: dialog.ink }
+            Rectangle { x: 5; y: 3; width: 7; height: 1; rotation: -35; color: dialog.ink }
         }
         // First-run / welcome state: fixed dark chrome (the Settings tones), the application
         // icon, instructions and theme-consistent buttons rather than default buttons on note

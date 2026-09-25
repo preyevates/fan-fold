@@ -30,14 +30,14 @@ function stickLift(edge, isCurrent, isHovered) {
  *  neighbours. The current note sits above the resting deck. Resting sticks descend by
  *  index, which is what produces the shingled overlap: lower indices paint on top.
  */
-function stickLayer(index, isCurrent, isHovered) {
+function stickLayer(index, isCurrent, isHovered, count) {
     if (isHovered) {
-        return 300
+        return 3 * count + 300
     }
     if (isCurrent) {
-        return 200
+        return 2 * count + 200
     }
-    return 100 - index
+    return count - index + 100
 }
 
 /** Height of a stick's clickable strip.
@@ -52,6 +52,30 @@ function stickHitLength(tabLength, pitch, index, count) {
         return tabLength
     }
     return Math.min(tabLength, pitch)
+}
+
+/** Scroll range for a deck whose natural extent may exceed its fixed viewport. */
+function fanScrollMaximum(count, pitch, tabLength, viewportHeight) {
+    if (count <= 0) {
+        return 0
+    }
+    return Math.max(0, (count - 1) * pitch + tabLength - viewportHeight)
+}
+
+/** Smallest offset change that puts a requested stick wholly inside the viewport. */
+function fanOffsetForIndex(index, currentOffset, maximumOffset, baseY, pitch, tabLength,
+                           viewportTop, viewportHeight) {
+    if (index < 0 || viewportHeight <= 0) {
+        return Math.max(0, Math.min(maximumOffset, currentOffset))
+    }
+    var offset = currentOffset
+    var top = baseY - index * pitch + offset - viewportTop
+    if (top < 0) {
+        offset -= top
+    } else if (top + tabLength > viewportHeight) {
+        offset -= top + tabLength - viewportHeight
+    }
+    return Math.max(0, Math.min(maximumOffset, offset))
 }
 
 /** Window position along the docking axis.

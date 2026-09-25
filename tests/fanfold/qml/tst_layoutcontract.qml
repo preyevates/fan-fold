@@ -19,7 +19,7 @@ import "LayoutContract.js" as LayoutContract
  * delegate changes:
  *   tab.y       = fanBaseY - index*fanPitch                   (:2000, drag offset omitted)
  *   tab.height  = fanTabLength                                (:2001)
- *   tab.z       = LayoutContract.stickLayer(index, cur, hov)  (:2003)
+ *   tab.z       = LayoutContract.stickLayer(index, cur, hov, count) (:2003)
  *   face.y      = stickLift(...).y, which is always 0         (:2017, LayoutContract:24)
  *   face.height = parent.height                               (:2018)
  *   hit         = no y and no anchors, so it sits at the tab's own origin (:2153-2156)
@@ -59,7 +59,7 @@ Item {
                 y: root.fanBaseY - index*root.fanPitch
                 width: root.fanTabWidth
                 height: root.fanTabLength
-                z: LayoutContract.stickLayer(index, false, false)
+                z: LayoutContract.stickLayer(index, false, false, root.count)
 
                 Rectangle {
                     id: face
@@ -101,10 +101,41 @@ Item {
                     + "it is compared with the panel's surface-local y")
         }
 
+        function test_layering_never_drops_long_decks_below_the_trigger() {
+            var triggerLayer = 50
+            for (var i = 0; i < 500; ++i)
+                verify(LayoutContract.stickLayer(i, false, false, 500) > triggerLayer,
+                       "stick " + i + " must remain above the fan trigger")
+            verify(LayoutContract.stickLayer(499, true, false, 500)
+                   > LayoutContract.stickLayer(0, false, false, 500),
+                   "the current stick remains above the resting deck")
+            verify(LayoutContract.stickLayer(499, false, true, 500)
+                   > LayoutContract.stickLayer(499, true, false, 500),
+                   "hover remains the top layer")
+        }
+
+        function test_scroll_range_is_zero_when_the_deck_fits() {
+            compare(LayoutContract.fanScrollMaximum(10, 70, 114, 744), 0)
+        }
+
+        function test_scroll_range_preserves_fixed_pitch_for_large_folders() {
+            compare(LayoutContract.fanScrollMaximum(70, 70, 114, 1232), 3712)
+        }
+
+        function test_ensure_far_and_near_sticks_are_wholly_visible() {
+            var maximum = LayoutContract.fanScrollMaximum(70, 70, 114, 1232)
+            compare(LayoutContract.fanOffsetForIndex(69, 0, maximum,
+                                                     1194, 70, 114, 76, 1232), maximum,
+                    "the farthest stick scrolls flush to the viewport's far edge")
+            compare(LayoutContract.fanOffsetForIndex(0, maximum, maximum,
+                                                     1194, 70, 114, 76, 1232), 0,
+                    "opening the nearest stick returns it wholly to view")
+        }
+
         /* The y coordinate a user aims at for stick i: the middle of the part of stick i
          * he can actually SEE.
          *
-         * Stick i-1 paints on top of stick i (z is 100-index, so lower index wins) and
+         * Stick i-1 paints on top of stick i (z descends with index, so lower index wins) and
          * its face begins one pitch below stick i's top edge. Stick i is therefore
          * visible only over [top, top+pitch). The front stick is the exception: nothing
          * paints over it, so its whole length is exposed. */
