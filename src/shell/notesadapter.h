@@ -1,10 +1,12 @@
 #pragma once
 
+#include <QAbstractItemModel>
 #include <QObject>
 #include <QStringList>
 #include <QVariantMap>
 
 class DocumentCollection;
+class SearchModel;
 
 /**
  * Serves the shell's `notesStore` contract from Fan Fold's DocumentCollection.
@@ -28,9 +30,13 @@ class DocumentCollection;
 class NotesAdapter final : public QObject
 {
     Q_OBJECT
+    Q_PROPERTY(QAbstractItemModel *searchModel READ searchModel CONSTANT)
 
 public:
     explicit NotesAdapter(DocumentCollection *collection, QObject *parent = nullptr);
+
+    /** The engine's whole-library search projection. Its query is transient shell state. */
+    QAbstractItemModel *searchModel() const;
 
     /** One complete manifest snapshot.
      *
@@ -99,5 +105,6 @@ private:
     int openFolderCount() const;
 
     DocumentCollection *m_collection = nullptr;
+    SearchModel *m_searchModel = nullptr;
     QString m_palette;
 };

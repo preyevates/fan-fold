@@ -3,6 +3,7 @@
 #include "appearancesettings.h"
 #include "documentcollection.h"
 #include "palette.h"
+#include "searchmodel.h"
 
 #include <QDir>
 #include <QSettings>
@@ -13,6 +14,7 @@
 NotesAdapter::NotesAdapter(DocumentCollection *collection, QObject *parent)
     : QObject(parent)
     , m_collection(collection)
+    , m_searchModel(new SearchModel(collection, this))
     // Pastels stays the DEFAULT palette even though the ColorBrewer group is listed
     // first: a new library should open with the gentle originals, not Bold red.
     // The last pick is restored from settings — with 25 palettes the choice is real
@@ -44,6 +46,11 @@ NotesAdapter::NotesAdapter(DocumentCollection *collection, QObject *parent)
         connect(m_collection, &DocumentCollection::fanChanged,
                 this, &NotesAdapter::changed);
     }
+}
+
+QAbstractItemModel *NotesAdapter::searchModel() const
+{
+    return m_searchModel;
 }
 
 QVariantMap NotesAdapter::failure(const QString &message) const
