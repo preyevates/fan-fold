@@ -1906,9 +1906,13 @@ PlasmaCore.Dialog {
                 font.family: dialog.noteFont; font.pixelSize: 10
                 color: dialog.derivedTone(dialog.paperColor, 0.5)
                 // The panel lists the WHOLE library; the fan is one folder of it. Say
-                // which folder that is, because the tree alone cannot.
-                text: libraryModel.count + (libraryModel.count === 1 ? " note" : " notes")
-                      + " · fan: " + dialog.openFolderLabel
+                // which folder that is, because the tree alone cannot. The count is the
+                // fan's, not the panel's: the model's row count mixes folder rows with
+                // notes and grows as folders are expanded, so it counts neither.
+                readonly property int fanCount: dialog.manifest.folderCount !== undefined
+                                                ? dialog.manifest.folderCount : dialog.order.length
+                text: "fan: " + dialog.openFolderLabel + " · "
+                      + fanCount + (fanCount === 1 ? " note" : " notes")
             }
             // A panel someone can be FORCED to use needs its own way out: with an empty
             // fan this panel is the entire interface.
