@@ -23,6 +23,17 @@ foreach(suite documentcollection librarymodels session themecatalog)
     set_tests_properties(fanfold-${suite} PROPERTIES TIMEOUT 120)
 endforeach()
 
+# The shell adapter keeps search transient: matches replace the visible deck without
+# changing or persisting the open folder's own order.
+add_executable(tst_notesadapter
+    tst_notesadapter.cpp
+    ../../src/shell/notesadapter.cpp
+    ../../src/shell/notesadapter.h)
+target_include_directories(tst_notesadapter PRIVATE ../../src/shell)
+target_link_libraries(tst_notesadapter PRIVATE FanFold::DocumentEngine Qt6::Core Qt6::Test)
+add_test(NAME fanfold-notesadapter COMMAND tst_notesadapter)
+set_tests_properties(fanfold-notesadapter PROPERTIES TIMEOUT 120)
+
 # The optional network importer is source-only. Its complete safety contract is
 # exercised with generated in-memory pages and temporary files; no real catalog,
 # retained private snapshot, or network request is part of the public test tree.

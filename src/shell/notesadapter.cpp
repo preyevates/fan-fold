@@ -46,6 +46,7 @@ NotesAdapter::NotesAdapter(DocumentCollection *collection, QObject *parent)
         connect(m_collection, &DocumentCollection::fanChanged,
                 this, &NotesAdapter::changed);
     }
+    connect(m_searchModel, &SearchModel::queryChanged, this, &NotesAdapter::changed);
 }
 
 QAbstractItemModel *NotesAdapter::searchModel() const
@@ -62,6 +63,14 @@ QStringList NotesAdapter::visibleFanIds() const
 {
     if (!m_collection) {
         return {};
+    }
+    if (searchActive()) {
+        QStringList matches;
+        matches.reserve(m_searchModel->rowCount());
+        for (int row = 0; row < m_searchModel->rowCount(); ++row) {
+            matches.append(m_searchModel->documentIdAt(row));
+        }
+        return matches;
     }
     QStringList visible;
     const QStringList fan = m_collection->fanIds();
@@ -88,6 +97,11 @@ QStringList NotesAdapter::visibleFanIds() const
         visible.append(id);
     }
     return visible;
+}
+
+bool NotesAdapter::searchActive() const
+{
+    return m_searchModel && !m_searchModel->query().trimmed().isEmpty();
 }
 
 /** How many live notes sit in the OPEN FOLDER.
@@ -252,6 +266,9 @@ QVariantMap NotesAdapter::load()
             // Root-relative open folder, empty for the library root. The shell shows it
             // and offers the way back to the root.
             {QStringLiteral("openFolder"), m_collection ? m_collection->openFolder() : QString()},
+            {QStringLiteral("searchActive"), searchActive()},
+            {QStringLiteral("searchQuery"), m_searchModel ? m_searchModel->query() : QString()},
+            {QStringLiteral("searchCount"), m_searchModel ? m_searchModel->rowCount() : 0},
             {QStringLiteral("migrated"), false},
             {QStringLiteral("warning"), QString()}};
 }
@@ -344,6 +361,9 @@ QVariantMap NotesAdapter::setOrder(const QStringList &ids)
 {
     if (!m_collection) {
         return failure(QStringLiteral("No library is open"));
+    }
+    if (searchActive()) {
+        return failure(QStringLiteral("Search results cannot be reordered"));
     }
     QStringList sorted = ids;
     QStringList expected = visibleFanIds();

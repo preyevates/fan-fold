@@ -103,6 +103,7 @@ private:
 
     /** Live notes in the open folder, direct children only; pinned ones count. */
     int openFolderCount() const;
+    bool searchActive() const;
 
     DocumentCollection *m_collection = nullptr;
     SearchModel *m_searchModel = nullptr;

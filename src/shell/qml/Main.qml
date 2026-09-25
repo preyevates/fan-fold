@@ -196,6 +196,8 @@ PlasmaCore.Dialog {
                                             ? manifest.libraryCount : dialog.order.length) === 0
     /** Root-relative folder the fan is a window onto; "" is the library root. */
     property string openFolder: manifest.openFolder !== undefined ? manifest.openFolder : ""
+    /** Search replaces the fan projection without changing the folder the fan returns to. */
+    readonly property bool searchActive: manifest.searchActive === true
     /** Leaf name of the open folder, for the one line that has to say where you are. */
     readonly property string openFolderLabel: dialog.openFolder === ""
         ? (libraryRoot ? String(libraryRoot).split("/").pop() : "Notes")
@@ -351,6 +353,13 @@ PlasmaCore.Dialog {
         // Closing the panel drops any armed restore: reopening it later must not present
         // a row that is still one click from moving a file.
         if(!opening) dialog.confirmRestoreId = ""
+    }
+    function setSearchQuery(query) {
+        notesStore.searchModel.query = String(query)
+    }
+    function clearSearch() {
+        if(notesStore.searchModel.query !== "") notesStore.searchModel.query = ""
+        if(librarySearch.text !== "") librarySearch.text = ""
     }
     // Selection change: disarm any destructive control (see confirmArchiveId) and re-read
     // the file facts. One handler, because QML allows only one per signal.
@@ -545,6 +554,7 @@ PlasmaCore.Dialog {
      *  @return true when the scope moved (or was already there). */
     function scopeToFolder(folder) {
         var wanted = folder === undefined || folder === null ? "" : String(folder)
+        if(dialog.searchActive) dialog.clearSearch()
         if(wanted === dialog.openFolder) return true
         var result = notesStore.openFolder(wanted)
         if(!result || !result.ok) {
@@ -568,6 +578,9 @@ PlasmaCore.Dialog {
         // "Whatever folder is open, that's where the note goes" — the Principal's rule.
         // There is no joinFan afterwards: the note is in the open folder, so the engine's
         // derivation already has it on the fan.
+        // A new blank note cannot match an arbitrary query. Return to the saved folder
+        // projection first so creation still puts the note on screen and opens it.
+        if(dialog.searchActive) dialog.clearSearch()
         var id = collection.createNote(dialog.openFolder)
         if(!id) { dialog.saveStatus = "New note refused · " + collection.lastError; return "" }
         applyManifest(notesStore.load())
@@ -1896,7 +1909,7 @@ PlasmaCore.Dialog {
              *  reading contentHeight here is circular and Qt resolves it to the fallback — a
              *  clipped final row and a scrollbar over four notes. */
             readonly property int libraryRowPitch: 32   // 30 px row + 2 px spacing
-            readonly property int libraryChrome: 96     // header + subtitle + rule + margins
+            readonly property int libraryChrome: 132    // header + subtitle + search + rule + margins
             // The footer cap is honoured only when the footer has a REAL position: during
             // layout its translated y can transiently make the cap negative, and a naive
             // Math.min then pins the panel to its 140 px floor permanently.
@@ -1932,7 +1945,7 @@ PlasmaCore.Dialog {
                 Rectangle {
                     // Marker in the same ink language the rows use, so "you are here"
                     // reads the same whether the scope is the root or a subfolder.
-                    visible: dialog.openFolder === ""
+                    visible: !dialog.searchActive && dialog.openFolder === ""
                     x: -8; anchors.verticalCenter: parent.verticalCenter
                     width: 2; height: 14; radius: 1
                     color: dialog.ink; opacity: 0.55
@@ -1957,8 +1970,12 @@ PlasmaCore.Dialog {
                 // notes and grows as folders are expanded, so it counts neither.
                 readonly property int fanCount: dialog.manifest.folderCount !== undefined
                                                 ? dialog.manifest.folderCount : dialog.order.length
-                text: "fan: " + dialog.openFolderLabel + " · "
-                      + fanCount + (fanCount === 1 ? " note" : " notes")
+                readonly property int matchCount: dialog.manifest.searchCount !== undefined
+                                                  ? dialog.manifest.searchCount : dialog.order.length
+                text: dialog.searchActive
+                    ? ("fan: search · " + matchCount + (matchCount === 1 ? " match" : " matches"))
+                    : ("fan: " + dialog.openFolderLabel + " · "
+                       + fanCount + (fanCount === 1 ? " note" : " notes"))
             }
             // A panel someone can be FORCED to use needs its own way out: with an empty
             // fan this panel is the entire interface.
@@ -1970,11 +1987,57 @@ PlasmaCore.Dialog {
                 explanation: "Close the Library · Esc"
                 onClicked: dialog.libraryOpen = false
             }
+            TextField {
+                id: librarySearch
+                objectName: "library-search"
+                x: 14; y: librarySubtitle.y + librarySubtitle.height + 6
+                width: parent.width - 28; height: 28
+                color: dialog.ink
+                font.family: dialog.noteFont; font.pixelSize: 12
+                selectByMouse: true
+                placeholderText: "Find a note"
+                placeholderTextColor: Qt.rgba(dialog.ink.r, dialog.ink.g, dialog.ink.b, 0.45)
+                leftPadding: 8; rightPadding: clearLibrarySearch.visible ? 28 : 8
+                topPadding: 3; bottomPadding: 3
+                Accessible.name: "Search every note in the Library"
+                onTextEdited: dialog.setSearchQuery(text)
+                Keys.onEscapePressed: function(event) {
+                    if(text !== "") {
+                        dialog.clearSearch()
+                    } else {
+                        dialog.libraryOpen = false
+                    }
+                    event.accepted = true
+                }
+                background: Rectangle {
+                    color: Qt.rgba(dialog.ink.r, dialog.ink.g, dialog.ink.b, 0.04)
+                    radius: 5
+                    border.width: librarySearch.activeFocus ? 1 : 0
+                    border.color: dialog.focusTone(dialog.paperColor)
+                }
+                Text {
+                    id: clearLibrarySearch
+                    objectName: "library-search-clear"
+                    visible: librarySearch.text !== ""
+                    anchors.right: parent.right; anchors.rightMargin: 8
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: "×"
+                    color: dialog.ink
+                    font.family: dialog.noteFont; font.pixelSize: 16
+                    Accessible.role: Accessible.Button
+                    Accessible.name: "Clear search"
+                    MouseArea {
+                        anchors.fill: parent; anchors.margins: -5
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: { dialog.clearSearch(); librarySearch.forceActiveFocus() }
+                    }
+                }
+            }
             // Hairline under the header, in the note's own spine tone — the panel idiom
             // every other surface here uses.
             Rectangle {
                 id: libraryRule
-                x: 14; y: librarySubtitle.y + librarySubtitle.height + 9
+                x: 14; y: librarySearch.y + librarySearch.height + 7
                 width: parent.width - 28; height: 1
                 color: dialog.derivedTone(dialog.paperColor, 0.18)
             }
@@ -2076,7 +2139,8 @@ PlasmaCore.Dialog {
                         // window onto. Without the second case the Library cannot answer
                         // "which of these folders am I looking at".
                         visible: libraryRow.isFolder
-                            ? (!libraryRow.archived && libraryRow.path === dialog.openFolder)
+                            ? (!dialog.searchActive && !libraryRow.archived
+                               && libraryRow.path === dialog.openFolder)
                             : libraryRow.current
                         x: 2; anchors.verticalCenter: parent.verticalCenter
                         width: 2; height: 16; radius: 1
@@ -2392,7 +2456,7 @@ PlasmaCore.Dialog {
                         if(!hit.pressed) return
                         var current = hit.mapToItem(surface,0,mouse.y).y
                         var delta = current - hit.pressY
-                        if(Math.abs(delta)>5) dialog.draggingNoteId=tab.noteId
+                        if(!dialog.searchActive && Math.abs(delta)>5) dialog.draggingNoteId=tab.noteId
                         if(tab.dragging) tab.offset=delta
                     }
                     onReleased: {
@@ -2490,7 +2554,9 @@ PlasmaCore.Dialog {
                     width: parent.width; wrapMode: Text.Wrap
                     font.family: dialog.neutralFont; font.pixelSize: 13
                     color: dialog.neutralText
-                    text: dialog.libraryIsEmpty
+                    text: dialog.searchActive
+                        ? ("No notes match “" + dialog.manifest.searchQuery + "”.")
+                        : dialog.libraryIsEmpty
                         ? "This folder has no notes yet."
                         : (dialog.folderIsEmpty
                             ? ("\u201C" + dialog.openFolderLabel + "\u201D has no notes yet.")
@@ -2516,7 +2582,9 @@ PlasmaCore.Dialog {
                     font.family: dialog.neutralFont; font.pixelSize: 11; color: dialog.neutralText
                     opacity: 0.85
                     lineHeight: 1.25
-                    text: dialog.libraryIsEmpty
+                    text: dialog.searchActive
+                        ? "Clear the Library search to return to the folder that was open before."
+                        : dialog.libraryIsEmpty
                         ? "Your notes live as ordinary Markdown files in the folder above — nothing is locked away.\n"
                           + "• Each note is a coloured tab on the fan at the screen edge; hover the edge to spread them.\n"
                           + "• The + above the fan creates a note; the footer inside a note holds colours, Library, pin, archive.\n"
@@ -2631,6 +2699,7 @@ PlasmaCore.Dialog {
             if(dialog.expanded && openId !== "") {
                 var at = dialog.order.indexOf(openId)
                 if(at >= 0) dialog.selected = at
+                else if(dialog.searchActive && dialog.order.length > 0) dialog.openNote(0, false)
                 else dialog.collapse()
             }
         }
