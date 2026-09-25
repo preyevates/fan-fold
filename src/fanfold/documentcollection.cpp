@@ -1,5 +1,7 @@
 #include "documentcollection.h"
 
+#include "appearancesettings.h"
+
 #include <QCryptographicHash>
 #include <QDateTime>
 #include <QDir>
@@ -1190,6 +1192,34 @@ bool DocumentCollection::setInk(const QString &id, const QString &ink)
     return ok;
 }
 
+bool DocumentCollection::setNoteFont(const QString &id, const QString &family, int size)
+{
+    Document *document = m_documents.value(id);
+    if (!document) {
+        return false;
+    }
+    if (!family.isEmpty() && !AppearanceSettings::safeFamily(family)) {
+        return false;
+    }
+    if (size != 0) {
+        double low = 0;
+        double high = 0;
+        if (!AppearanceSettings::numericRange(QStringLiteral("fontSize"), &low, &high)
+            || size < low || size > high) {
+            return false;
+        }
+    }
+    if (document->m_fontFamily == family && document->m_fontSize == size) {
+        return true;
+    }
+    document->m_fontFamily = family;
+    document->m_fontSize = size;
+    markMetadataDirty();
+    const bool ok = persistMetadata();
+    emitDocumentChanged(document);
+    return ok;
+}
+
 QStringList DocumentCollection::liveIdsInFolder(const QString &folder) const
 {
     const QString wanted = normalizedFolder(folder);
@@ -1675,6 +1705,8 @@ QJsonObject DocumentCollection::metadataFor(const Document *document) const
             {QStringLiteral("pinnedWindowHeight"), document->m_pinnedWindowHeight},
             {QStringLiteral("paper"), document->m_paper},
             {QStringLiteral("ink"), document->m_ink},
+            {QStringLiteral("fontFamily"), document->m_fontFamily},
+            {QStringLiteral("fontSize"), document->m_fontSize},
             {QStringLiteral("icon"), document->m_icon}};
 }
 
@@ -1706,6 +1738,19 @@ void DocumentCollection::applyMetadata(Document *document, const QJsonObject &ob
     const QString ink = normalizedColor(object.value(QStringLiteral("ink")).toString(), true);
     if (!paper.isEmpty()) document->m_paper = paper;
     if (!ink.isEmpty()) document->m_ink = ink;
+    // Typography override: validated exactly as setNoteFont() validates, so a hand-edited
+    // index cannot smuggle an unsafe family into CSS or an illegible size into a note.
+    // Anything refused simply follows the global setting.
+    const QString family = object.value(QStringLiteral("fontFamily")).toString();
+    document->m_fontFamily = AppearanceSettings::safeFamily(family) ? family : QString();
+    const int size = object.value(QStringLiteral("fontSize")).toInt();
+    double low = 0;
+    double high = 0;
+    document->m_fontSize =
+        AppearanceSettings::numericRange(QStringLiteral("fontSize"), &low, &high) && size >= low
+            && size <= high
+        ? size
+        : 0;
     // Confined to the library, like every other stored path: a metadata file that has
     // been hand-edited (or synced from elsewhere) must not be able to point the icon at
     // an arbitrary file on disk.

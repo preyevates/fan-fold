@@ -12,6 +12,7 @@
 #include <memory>
 #include <sys/stat.h>
 
+#include "appearancesettings.h"
 #include "documentcollection.h"
 
 namespace {
@@ -119,6 +120,8 @@ private slots:
 
     // 0.2.0-6: one-time bulk colour into a folder's notes, never a folder rule.
     void folderColourIsAOneTimeWriteIntoEachNotesOwnColour();
+    // 0.2.0-6: per-note font family/size override, metadata only.
+    void noteFontOverridePersistsOutsideMarkdownAndRefusesBadValues();
 };
 
 void DocumentCollectionTest::discoversMarkdownRecursivelyWithoutFollowingLinks()
@@ -1000,6 +1003,60 @@ void DocumentCollectionTest::folderColourIsAOneTimeWriteIntoEachNotesOwnColour()
     QCOMPARE(reopened.document(filed)->paper(), QStringLiteral("#303030"));
     QCOMPARE(reopened.document(filed)->ink(), QStringLiteral("#404040"));
     QVERIFY(reopened.document(filed)->archived());
+}
+
+void DocumentCollectionTest::noteFontOverridePersistsOutsideMarkdownAndRefusesBadValues()
+{
+    Fixture f;
+    writeBytes(f.notes.filePath("One.md"), "one\n");
+    writeBytes(f.notes.filePath("Two.md"), "two\n");
+    QString one, two;
+    double low = 0;
+    double high = 0;
+    QVERIFY(AppearanceSettings::numericRange(QStringLiteral("fontSize"), &low, &high));
+    const int lowest = int(low);
+    const int highest = int(high);
+    {
+        auto &collection = f.collection();
+        one = collection.idForRelativePath("One.md");
+        two = collection.idForRelativePath("Two.md");
+        // Default: follow the global setting.
+        QCOMPARE(collection.document(one)->fontFamily(), QString());
+        QCOMPARE(collection.document(one)->fontSize(), 0);
+
+        // Out of the global bounds, an unsafe family, and an unknown id are all refused
+        // and leave the note untouched.
+        QVERIFY(!collection.setNoteFont(one, QString(), lowest - 1));
+        QVERIFY(!collection.setNoteFont(one, QString(), highest + 1));
+        QVERIFY(!collection.setNoteFont(one, QStringLiteral("x\"; } body { color:red"), 0));
+        QVERIFY(!collection.setNoteFont(QStringLiteral("nope"), QStringLiteral("Noto Serif"), 0));
+        QCOMPARE(collection.document(one)->fontFamily(), QString());
+        QCOMPARE(collection.document(one)->fontSize(), 0);
+
+        // Both bounds are themselves legal.
+        QVERIFY(collection.setNoteFont(one, QStringLiteral("Noto Serif"), lowest));
+        QVERIFY(collection.setNoteFont(one, QStringLiteral("Noto Serif"), highest));
+        QVERIFY(collection.setNoteFont(two, QStringLiteral("DejaVu Sans Mono"), 0));
+    }
+    // Nothing is ever written into the Markdown.
+    QCOMPARE(readBytes(f.notes.filePath("One.md")), QByteArray("one\n"));
+    QCOMPARE(readBytes(f.notes.filePath("Two.md")), QByteArray("two\n"));
+    {
+        DocumentCollection reopened(f.state.path());
+        QVERIFY(reopened.openRoot(f.notes.path()));
+        QCOMPARE(reopened.document(one)->fontFamily(), QStringLiteral("Noto Serif"));
+        QCOMPARE(reopened.document(one)->fontSize(), highest);
+        QCOMPARE(reopened.document(two)->fontFamily(), QStringLiteral("DejaVu Sans Mono"));
+        QCOMPARE(reopened.document(two)->fontSize(), 0);
+        // Clearing both returns the note to the global setting, and that also persists.
+        QVERIFY(reopened.setNoteFont(one, QString(), 0));
+    }
+    DocumentCollection again(f.state.path());
+    QVERIFY(again.openRoot(f.notes.path()));
+    QCOMPARE(again.document(one)->fontFamily(), QString());
+    QCOMPARE(again.document(one)->fontSize(), 0);
+    QCOMPARE(again.document(two)->fontFamily(), QStringLiteral("DejaVu Sans Mono"));
+    QCOMPARE(readBytes(f.notes.filePath("One.md")), QByteArray("one\n"));
 }
 
 #include "tst_documentcollection.moc"

@@ -97,6 +97,18 @@ bool AppearanceSettings::safeThemeKey(const QString &key)
     return expression.match(key).hasMatch();
 }
 
+bool AppearanceSettings::numericRange(const QString &key, double *low, double *high)
+{
+    for (const Bound &bound : numericBounds()) {
+        if (key == QLatin1String(bound.key)) {
+            if (low) *low = bound.low;
+            if (high) *high = bound.high;
+            return true;
+        }
+    }
+    return false;
+}
+
 bool AppearanceSettings::safeFamily(const QString &name)
 {
     if (name.isEmpty() || name.size() > 64 || name != name.trimmed()) {

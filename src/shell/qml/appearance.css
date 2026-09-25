@@ -130,3 +130,35 @@
 #settings .settings-body::-webkit-scrollbar-thumb:hover{background:color-mix(in srgb,var(--ink,#1b1b1f) 30%,var(--paper,#f5f0e6))}
 /* The author line sits with About, in the same key/value shape as the version. */
 #settings .aboutby{margin-top:6px;font-size:11px;opacity:.8}
+/* --- The per-note font popover (format toolbar "Aa") -------------------------------
+   Same idiom as the Settings panel: the note's own paper and ink, with the raised field
+   and hairline tones derived from them, so it repaints with the note it opens over. */
+#note-font{
+ --neutral-bg:var(--paper,#f5f0e6);
+ --neutral-raised:color-mix(in srgb,var(--ink,#1b1b1f) 7%,var(--paper,#f5f0e6));
+ --neutral-line:color-mix(in srgb,var(--ink,#1b1b1f) 26%,var(--paper,#f5f0e6));
+ --neutral-text:var(--ink,#1b1b1f);
+ --neutral-dim:color-mix(in srgb,var(--ink,#1b1b1f) 62%,var(--paper,#f5f0e6));
+ --neutral-focus:#4c8dff;
+ position:fixed;z-index:30;box-sizing:border-box;width:230px;padding:10px;
+ background:var(--neutral-bg);color:var(--neutral-text);border:1px solid var(--neutral-line);
+ border-radius:10px;box-shadow:0 8px 28px #0008;font:12px "Noto Sans",sans-serif}
+#note-font[hidden]{display:none}#note-font *{box-sizing:border-box}
+#note-font input,#note-font button{font:inherit;color:var(--neutral-text);
+ background:var(--neutral-raised);border:1px solid var(--neutral-line);border-radius:5px}
+#note-font button{cursor:pointer}
+#note-font button:hover{background:color-mix(in srgb,var(--ink,#1b1b1f) 14%,var(--paper,#f5f0e6))}
+#note-font label.row,#note-font .row{display:flex;align-items:center;justify-content:space-between;
+ gap:10px;margin:0 0 6px;font-size:11px;min-height:26px}
+#note-font label.theme-row{flex-direction:column;align-items:stretch;gap:5px}
+#note-font .actions{justify-content:flex-end;margin:0}
+#note-font input[type="number"]{width:96px;height:26px;padding:2px 6px}
+#note-font #note-font-default{padding:4px 10px;min-height:26px}
+#note-font input:invalid{outline:1px solid #a24332}
+#note-font :focus-visible,#note-font input:focus{outline:2px solid var(--neutral-focus);outline-offset:1px}
+#note-font .combo{position:relative;display:block;width:100%}
+#note-font .combo-slot{display:block;width:100%}
+#note-font .combo-button{display:flex;align-items:center;justify-content:space-between;gap:6px;
+ width:100%;min-height:26px;padding:2px 6px;text-align:left;cursor:pointer}
+#note-font .combo-value{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#note-font .combo-caret{flex:0 0 auto;color:var(--neutral-dim);font-size:9px}

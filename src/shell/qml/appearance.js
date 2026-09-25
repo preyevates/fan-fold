@@ -98,8 +98,15 @@ ap.apply=()=>{
  fan.frames.forEach((frame,i)=>{
   const style=frame.contentDocument.documentElement.style,preset=fan.swatchColorOf(i);
   const spine=ap.spineOf(preset.paper);
+  // The note's OWN typography override, when it has one; the global value otherwise.
+  // A stored family this machine lacks falls back to the global font rather than to a
+  // name nothing can render. Tab labels and panels (the host document below) keep the
+  // global type regardless.
+  const own=fan.fontOf?fan.fontOf(i):{family:"",size:0};
+  const noteFont=own.family&&ap.families.indexOf(own.family)>=0?ap.quoteFamily(own.family)+", sans-serif":font;
+  const noteSize=own.size>0?own.size:s.fontSize;
   const values={paper:preset.paper,ink:preset.ink,spine:spine,codeink:ap.readableInk(spine),
-   tokenboost:ap.tokenBoost(spine),font:font,size:s.fontSize+"px",
+   tokenboost:ap.tokenBoost(spine),font:noteFont,size:noteSize+"px",
    leading:s.lineSpacing,padx:s.padX+"px",pady:s.padY+"px",tabs:s.tabSpacing,icon:s.iconSize+"px",
    // The footer command palette's own geometry, handed to the editor so the format
    // toolbar can be built from the SAME numbers rather than its own fixed padding:
@@ -125,7 +132,7 @@ ap.apply=()=>{
  const current=fan.swatchColorOf(fan.active),host=document.documentElement.style;
  Object.entries({paper:current.paper,ink:current.ink,spine:ap.spineOf(current.paper),font:font,
   size:s.fontSize+"px",icon:s.iconSize+"px"}).forEach(([k,v])=>host.setProperty("--"+k,v));
- notes.previewAppearance(s);ap.render();
+ notes.previewAppearance(s);ap.render();if(ap.noteFont)ap.noteFont.render();
 };
 /** The status line is for FAILURE only. A successful save is evident from the note
  * changing under the panel, so there is no routine "saved" footer; an explicit error —
@@ -310,6 +317,77 @@ ap.makeCombo=(id,ariaLabel,onPick)=>{
  ap.combos[id]=api;
  return api;
 };
+/** The per-note font popover opened from the editor's format toolbar ("Aa").
+ *
+ * One note may deviate from the global Settings font and size; the global values stay the
+ * default and are not touched here. Per NOTE, never per selection: nothing is written
+ * into the Markdown, so no span or inline HTML ever reaches the file. The override lives
+ * in library metadata beside the note's paper/ink and arrives here through the manifest.
+ *
+ * It wears the note's own paper/ink through the same derived tokens as the Settings panel
+ * (appearance.css) and reuses the SAME accessible font combobox rather than a second list.
+ * Every change is a CSS-variable repaint of the resident editor: text, caret and undo
+ * history are never touched. Escape and a click anywhere outside close it.
+ */
+ap.makeNoteFontPanel=()=>{
+ const panel=document.createElement("div");
+ panel.id="note-font";panel.hidden=true;panel.setAttribute("role","dialog");
+ panel.setAttribute("aria-label","This note's font");
+ panel.innerHTML="<label class=\"row theme-row\"><span>Font</span><span class=\"combo-slot\" id=\"note-font-slot\"></span></label>"
+  +"<label class=\"row\"><span>Size</span><input type=\"number\" id=\"note-font-size\" step=\"1\"></label>"
+  +"<div class=\"row actions\"><button type=\"button\" id=\"note-font-default\">Default</button></div>";
+ document.body.append(panel);
+ const size=panel.querySelector("#note-font-size"),reset=panel.querySelector("#note-font-default");
+ const state={slot:-1};
+ const idOf=()=>fan.states[state.slot]?fan.states[state.slot].id:"";
+ const combo=ap.makeCombo("note-font-select","Note font",family=>{
+  const id=idOf();if(!id)return;
+  fan.setNoteFont(id,family,fan.fontOf(state.slot).size);
+ });
+ panel.querySelector("#note-font-slot").append(combo.root);
+ const api={panel,combo,size,reset,state,
+  isOpen:()=>!panel.hidden,
+  /** Show what this note actually PAINTS: its override when set, the global otherwise. */
+  render(){
+   if(panel.hidden||!ap.value)return;
+   const own=fan.fontOf(state.slot),range=(fan.manifest&&fan.manifest.fontSizeRange)||{min:12,max:28};
+   combo.set(ap.families.map(f=>({value:f,label:f})),
+    own.family&&ap.families.indexOf(own.family)>=0?own.family:(ap.fontChoice().family||ap.systemFamily||""));
+   size.min=range.min;size.max=range.max;
+   if(document.activeElement!==size)size.value=own.size>0?own.size:ap.value.fontSize;
+   panel.classList.toggle("overridden",!!(own.family||own.size));
+  },
+  /** @param slot editor slot  @param box the toolbar button's rect (iframe = viewport). */
+  open(slot,box){
+   fan.remember();state.slot=slot;panel.hidden=false;api.render();
+   const margin=6,w=panel.offsetWidth,h=panel.offsetHeight;
+   panel.style.left=Math.max(margin,Math.min(box.left,window.innerWidth-w-margin))+"px";
+   panel.style.top=Math.max(margin,Math.min(box.bottom+4,window.innerHeight-h-margin))+"px";
+   combo.button.focus();
+  },
+  close(restore){
+   if(panel.hidden)return;
+   combo.close(false);panel.hidden=true;
+   if(restore!==false)fan.focusSlot(fan.active);
+  },
+  toggle(slot,box){api.isOpen()&&state.slot===slot?api.close():api.open(slot,box)}};
+ size.addEventListener("input",()=>{
+  if(size.value===""||!size.checkValidity())return;
+  const id=idOf();if(!id)return;
+  fan.setNoteFont(id,fan.fontOf(state.slot).family,Math.round(Number(size.value)));
+ });
+ reset.addEventListener("click",async()=>{
+  const id=idOf();if(!id)return;
+  await fan.setNoteFont(id,"",0);size.blur();api.render();
+ });
+ panel.addEventListener("keydown",event=>{
+  if(event.key==="Escape"){event.preventDefault();event.stopPropagation();api.close()}
+ });
+ document.addEventListener("mousedown",event=>{
+  if(!panel.hidden&&!panel.contains(event.target)&&!combo.pop.contains(event.target))api.close(false);
+ });
+ return api;
+};
 ap.render=()=>{
  if(!ap.value)return;
  document.querySelectorAll("[data-setting]").forEach(el=>{
@@ -421,6 +499,7 @@ ap.init=async()=>{
  panel.querySelector("#font-slot").append(fontCombo.root);
  fontCombo.button.setAttribute("aria-describedby","font-help");
  fontCombo.set(ap.families.map(family=>({value:family,label:family})),"");
+ ap.noteFont=ap.makeNoteFontPanel();
  const r=await fan.call("loadAppearance");ap.value=r.settings;ap.apply();
  // A load WARNING is a real failure to report (unsafe path, unreadable file): it shows.
  // The ordinary "loaded fine" case says nothing at all.

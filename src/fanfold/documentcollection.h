@@ -79,6 +79,10 @@ public:
     bool inFan() const { return m_inFan; }
     QString paper() const { return m_paper; }
     QString ink() const { return m_ink; }
+    /** Per-note font family override; empty means follow the global Settings font. */
+    QString fontFamily() const { return m_fontFamily; }
+    /** Per-note font size override in px; 0 means follow the global Settings size. */
+    int fontSize() const { return m_fontSize; }
     /** Relative path of this note's tab icon under the library, or empty for none. */
     QString icon() const { return m_icon; }
     /** Size of the file on disk at the last stat, independent of the unsaved buffer. */
@@ -103,6 +107,8 @@ private:
     QString m_saveError;
     QString m_paper = QStringLiteral("#f5f0e6");
     QString m_ink = QStringLiteral("auto");
+    QString m_fontFamily;
+    int m_fontSize = 0;
     QString m_icon;
     QDateTime m_diskModified;
     qint64 m_diskBytes = 0;
@@ -276,6 +282,12 @@ public:
      *  @param relative Path under the library root, e.g. "Assets/icons/book.svg". */
     Q_INVOKABLE bool setIcon(const QString &id, const QString &relative);
     Q_INVOKABLE bool setInk(const QString &id, const QString &ink);
+    /** Per-note typography override, stored in library metadata only — the .md is never
+     *  written. `family` empty clears the family override (follow the global font) and
+     *  must otherwise pass AppearanceSettings::safeFamily(); `size` 0 clears the size
+     *  override and must otherwise sit inside the global fontSize bounds.
+     *  @return false (nothing changed) for an unknown id or a refused value. */
+    Q_INVOKABLE bool setNoteFont(const QString &id, const QString &family, int size);
 
     /** One-time bulk write of a paper colour into every live note of `folder`.
      *

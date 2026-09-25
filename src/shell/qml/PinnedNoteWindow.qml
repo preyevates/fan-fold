@@ -225,7 +225,10 @@ Window {
             // text present, selectable, and invisible.
             var own = notesStore.colourOf(id)
             var settings = appearanceStore.load().settings
-            var family = settings.fontFamilyName ? settings.fontFamilyName : "Noto Sans"
+            // The note's own family/size override wins over the global one when set.
+            var family = own && own.fontFamily ? String(own.fontFamily)
+                : (settings.fontFamilyName ? settings.fontFamilyName : "Noto Sans")
+            var size = own && own.fontSize > 0 ? own.fontSize : settings.fontSize
             var paper = own && own.paper ? String(own.paper) : "#f5f0e6"
             var ink = own && own.ink ? String(own.ink) : "#2b2b2b"
             // The KEYS here must be exactly the custom properties editor-theme.css reads:
@@ -244,7 +247,7 @@ Window {
                         : (spineLum < 0.12 ? "brightness(3.1) saturate(1.25)"
                                            : "brightness(2.2) saturate(1.15)"),
                     font: "\"" + family + "\", sans-serif",
-                    size: settings.fontSize + "px",
+                    size: size + "px",
                     leading: String(settings.lineSpacing),
                     padx: settings.padX + "px", pady: settings.padY + "px",
                     tabs: String(settings.tabSpacing), icon: settings.iconSize + "px"}

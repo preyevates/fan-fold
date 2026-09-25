@@ -396,6 +396,20 @@ fan.swatchColorOf=i=>{
   return {paper:"#f5f0e6",ink:"#1b1b1f"};
  return {paper:fan.manifest.paper[s.id],ink:fan.manifest.ink[s.id]};
 };
+/** @return {family,size} this note's OWN typography override: "" / 0 mean "follow the
+ * global Settings value". Tolerates an empty deck and an older manifest without the maps. */
+fan.fontOf=i=>{
+ const s=fan.states[i],m=fan.manifest;
+ if(!s||!m||!m.fontFamily||!m.fontSize)return {family:"",size:0};
+ return {family:String(m.fontFamily[s.id]||""),size:Number(m.fontSize[s.id])||0};
+};
+/** Store one note's typography override (metadata only — never a Markdown byte). The
+ * native side validates the family and the size bounds; a refusal is reported, not thrown. */
+fan.setNoteFont=async(id,family,size)=>{
+ const r=await fan.call("setNoteFont",id,family,size);
+ if(r.ok)await fan.refresh();else{fan.states[fan.active].status=r.error;fan.publish();}
+ return r;
+};
 /** @return true when this note's literal colour is one the selected palette offers. */
 fan.paperInPalette=i=>fan.paletteOf().swatches.some(s=>s.paper===fan.manifest.paper[fan.states[i].id]);
 

@@ -59,6 +59,10 @@ public:
      *  stays individually changeable afterwards; this is not a folder-default rule.
      *  Returns the refreshed manifest plus `applied` (how many notes), like setPaper(). */
     Q_INVOKABLE QVariantMap applyColourToOpenFolder(const QString &mode, const QString &value);
+    /** Per-note typography override: `family` empty and `size` 0 each mean "follow the
+     *  global Settings value". Stored in library metadata only; the .md is never written.
+     *  An unsafe family or an out-of-range size is refused. @return a fresh load(). */
+    Q_INVOKABLE QVariantMap setNoteFont(const QString &id, const QString &family, int size);
 
     /** Select the palette offering the CHOICES. Repaints nothing; persisted so the panel
      *  reopens on the same palette. */

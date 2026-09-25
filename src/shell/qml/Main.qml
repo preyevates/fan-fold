@@ -2832,6 +2832,9 @@ PlasmaCore.Dialog {
         // no text, history or caret.
         function setPaper(id,color) { var result=notesStore.setPaper(id,color); if(result.ok) { dialog.applyManifest(result); dialog.syncEditorColours() } return result }
         function setInk(id,value) { var result=notesStore.setInk(id,value); if(result.ok) { dialog.applyManifest(result); dialog.syncEditorColours() } return result }
+        /** Per-note font override from the editor's format toolbar ("" / 0 = global).
+         *  Metadata only: no Markdown byte, caret or undo entry is touched. */
+        function setNoteFont(id,family,size) { var result=notesStore.setNoteFont(id,family,size); if(result.ok) { dialog.applyManifest(result); dialog.syncEditorColours() } return result }
         function setPalette(key) { var result=notesStore.setPalette(key); if(result.ok) dialog.applyManifest(result); return result }
         function setOrder(value) { var result=notesStore.setOrder(value); if(result.ok) dialog.applyManifest(result); return result }
         /** `dirty` is the AGGREGATE (close guard); `self` is the selected note's own

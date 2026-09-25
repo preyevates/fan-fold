@@ -1,5 +1,6 @@
 #include "notesadapter.h"
 
+#include "appearancesettings.h"
 #include "documentcollection.h"
 #include "palette.h"
 
@@ -131,7 +132,11 @@ QVariantMap NotesAdapter::colourOf(const QString &id) const
         ? Palette::autoInk()
         : Palette::normalizeInk(document->ink());
     return {{QStringLiteral("paper"), paperValue},
-            {QStringLiteral("ink"), Palette::resolveInk(paperValue, stored)}};
+            {QStringLiteral("ink"), Palette::resolveInk(paperValue, stored)},
+            // The note's own typography override ("" / 0 = follow the global setting), so
+            // a pinned window honours it exactly as the deck does.
+            {QStringLiteral("fontFamily"), document->fontFamily()},
+            {QStringLiteral("fontSize"), document->fontSize()}};
 }
 
 QVariantMap NotesAdapter::load()
@@ -145,7 +150,15 @@ QVariantMap NotesAdapter::load()
     QVariantMap inkModes;
     QVariantMap inPalette;
     QVariantMap inkInPalette;
+    QVariantMap fontFamilies;
+    QVariantMap fontSizes;
     QStringList ids;
+
+    // The per-note size control offers exactly the global control's legible range, read
+    // from the one table AppearanceSettings clamps against rather than restated here.
+    double fontLow = 0;
+    double fontHigh = 0;
+    AppearanceSettings::numericRange(QStringLiteral("fontSize"), &fontLow, &fontHigh);
 
     const QVariantMap active = Palette::paletteOf(m_palette);
     const QStringList offered = Palette::paletteColors(m_palette);
@@ -188,6 +201,8 @@ QVariantMap NotesAdapter::load()
                                                         : QStringLiteral("explicit");
             inPalette[id] = offered.contains(paperValue);
             inkInPalette[id] = stored != Palette::autoInk() && offered.contains(stored);
+            fontFamilies[id] = document->fontFamily();
+            fontSizes[id] = document->fontSize();
         }
     }
 
@@ -202,6 +217,11 @@ QVariantMap NotesAdapter::load()
             {QStringLiteral("inkMode"), inkModes},
             {QStringLiteral("inPalette"), inPalette},
             {QStringLiteral("inkInPalette"), inkInPalette},
+            // Per-note typography overrides: "" / 0 mean follow the global Settings value.
+            {QStringLiteral("fontFamily"), fontFamilies},
+            {QStringLiteral("fontSize"), fontSizes},
+            {QStringLiteral("fontSizeRange"),
+             QVariantMap{{QStringLiteral("min"), int(fontLow)}, {QStringLiteral("max"), int(fontHigh)}}},
             {QStringLiteral("palette"), m_palette},
             {QStringLiteral("palettes"), Palette::paletteChoices()},
             {QStringLiteral("activePalette"), active},
@@ -269,6 +289,18 @@ QVariantMap NotesAdapter::applyColourToOpenFolder(const QString &mode, const QSt
     QVariantMap result = load();
     result.insert(QStringLiteral("applied"), applied);
     return result;
+}
+
+QVariantMap NotesAdapter::setNoteFont(const QString &id, const QString &family, int size)
+{
+    if (!m_collection || !m_collection->document(id)) {
+        return failure(QStringLiteral("Unknown note ID"));
+    }
+    if (!m_collection->setNoteFont(id, family.trimmed(), size)) {
+        return failure(QStringLiteral("Note font refused: unsafe family or size out of range"));
+    }
+    emit changed();
+    return load();
 }
 
 QVariantMap NotesAdapter::setInk(const QString &id, const QString &value)

@@ -38,7 +38,13 @@ let editor=new Vditor("editor",{
   }
  },
  cache:{enable:false},value:parent.fixtures[index],
- toolbar:["edit-mode","headings","bold","italic","strike","inline-code","link","list","ordered-list","check","quote","code","table","line","upload","record","undo","redo"],
+ toolbar:["edit-mode","headings","bold","italic","strike","inline-code","link","list","ordered-list","check","quote","code","table","line",
+  // This NOTE's font family and size (never the selection's: nothing is written into the
+  // Markdown). The click is taken by installNoteFont()'s capture-phase listener, so the
+  // vendor's own handler below never runs.
+  {name:"ff-font",tip:"Note font",tipPosition:"s",click:()=>{},
+   icon:'<svg viewBox="0 0 24 24" aria-hidden="true"><text x="12" y="17" text-anchor="middle" font-size="14" font-weight="600" font-family="sans-serif" fill="currentColor">Aa</text></svg>'},
+  "upload","record","undo","redo"],
  // Drops, pastes and recordings are COPIED INTO THE LIBRARY and referenced relatively,
  // so the notes folder stays a self-contained thing the user can move or sync.
  //
@@ -63,7 +69,7 @@ let editor=new Vditor("editor",{
   // which is the whole reason assets are stored relatively in the first place.
   markdown:{sanitize:true, linkBase:(parent.fan&&parent.fan.linkBase)||""}},
  input:()=>parent.fan.changed(index),
- after:()=>{ parent.fan.onReady(index,editor); installTableControls(); installRecorder(); brandUploadButton(); }
+ after:()=>{ parent.fan.onReady(index,editor); installTableControls(); installRecorder(); brandUploadButton(); installNoteFont(); }
 });
 
 /**
@@ -213,7 +219,11 @@ window.hintMetrics=()=>{
   viewport:{w:innerWidth,h:innerHeight},items:items,count:items.length};
 };
 document.addEventListener("selectionchange",()=>{if(parent.fan.active===index)parent.fan.remember();});
-document.addEventListener("keydown",e=>{if(e.key==="Escape"){e.preventDefault();e.stopImmediatePropagation();parent.fan.suspend();parent.notes.collapse();}},true);
+document.addEventListener("keydown",e=>{if(e.key==="Escape"){e.preventDefault();e.stopImmediatePropagation();
+ // An open note-font popover takes Escape first: closing it must not collapse the card.
+ const pop=parent.appearance&&parent.appearance.noteFont;
+ if(pop&&pop.isOpen()){pop.close();return;}
+ parent.fan.suspend();parent.notes.collapse();}},true);
 document.addEventListener("keydown",e=>{if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==="s"){e.preventDefault();e.stopImmediatePropagation();parent.fan.save(index);}},true);
 
 /**
@@ -276,6 +286,30 @@ function brandUploadButton(){
  paint();
  // The toolbar can be rebuilt (mode switches), so keep watching cheaply.
  new MutationObserver(paint).observe(document.body, {childList:true, subtree:true});
+}
+
+/**
+ * The format toolbar's "Aa" entry: open this note's font popover in the host page.
+ *
+ * DELEGATED and capture-phase, like the recorder and upload button: the toolbar is built
+ * lazily on first reveal, so there is no element to bind at `after:` time. The popover
+ * lives in the parent document (it reuses the Settings panel's combobox), and this frame
+ * fills the whole viewport, so the button's own rect is already in host coordinates.
+ * A press anywhere else in this frame is an outside click and closes it.
+ */
+function installNoteFont(){
+ const pop=()=>parent.appearance&&parent.appearance.noteFont;
+ document.addEventListener("click",ev=>{
+  const hit=ev.target.closest&&ev.target.closest('[data-type="ff-font"]');
+  if(!hit)return;
+  ev.preventDefault();ev.stopImmediatePropagation();
+  const p=pop();if(p)p.toggle(index,hit.getBoundingClientRect());
+ },true);
+ document.addEventListener("mousedown",ev=>{
+  const p=pop();if(!p||!p.isOpen())return;
+  if(ev.target.closest&&ev.target.closest('[data-type="ff-font"]'))return;
+  p.close(false);
+ },true);
 }
 
 function installRecorder(){

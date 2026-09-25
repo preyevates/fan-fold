@@ -32,6 +32,10 @@ public:
     static QVariantMap normalize(QVariantMap input);
     /** True when a font family name is safe to emit into CSS and is plausibly a family. */
     static bool safeFamily(const QString &name);
+    /** The legible range of one numeric setting, from the SAME table normalize() clamps
+     *  against, so a per-note override can never drift from the global control.
+     *  @return false for an unknown key. */
+    static bool numericRange(const QString &key, double *low, double *high);
     /** True for a built-in or external family/variant chooser key.
      * The key identifies offered swatches only; it is never treated as a path.
      */
