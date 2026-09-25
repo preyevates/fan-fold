@@ -276,6 +276,21 @@ public:
      *  @param relative Path under the library root, e.g. "Assets/icons/book.svg". */
     Q_INVOKABLE bool setIcon(const QString &id, const QString &relative);
     Q_INVOKABLE bool setInk(const QString &id, const QString &ink);
+
+    /** One-time bulk write of a paper colour into every live note of `folder`.
+     *
+     *  NOT a folder rule: each note's own stored paper is overwritten once, and every
+     *  note remains individually changeable afterwards exactly as before. The set is the
+     *  folder's direct children that are neither archived, trashed nor missing; pinned
+     *  notes are included. The value is validated before anything is touched, metadata
+     *  is persisted ONCE, and documentChanged() is emitted per note that changed.
+     *  @return how many notes the set holds (changed or already equal), or -1 when the
+     *  colour is invalid or the index could not be written. */
+    Q_INVOKABLE int setPaperForFolder(const QString &folder, const QString &paper);
+    /** Ink counterpart of setPaperForFolder(); accepts the sentinel "auto". */
+    Q_INVOKABLE int setInkForFolder(const QString &folder, const QString &ink);
+    /** Ids setPaperForFolder()/setInkForFolder() would write, in catalog order. */
+    Q_INVOKABLE QStringList liveIdsInFolder(const QString &folder) const;
     Q_INVOKABLE bool hasRecovery(const QString &id) const;
     Q_INVOKABLE bool watchHealthy() const;
 
@@ -352,6 +367,7 @@ private:
                              QDateTime *modified = nullptr, qint64 *bytes = nullptr);
     static QString identityKey(quint64 device, quint64 inode);
     static QString normalizedColor(const QString &value, bool allowAuto = false);
+    int setColourForFolder(const QString &folder, const QString &value, bool ink);
     static QString safeTitleFileName(const QString &title);
     static bool renameNoReplace(const QString &source, const QString &target, QString *error);
     static bool lessThanByPath(const QString &left, const QString &right);

@@ -54,6 +54,11 @@ public:
     /** Assign one note's ink: the sentinel "auto", or a literal colour. An explicit
      *  low-contrast choice is accepted as given. @return a fresh load() on success. */
     Q_INVOKABLE QVariantMap setInk(const QString &id, const QString &value);
+    /** One-time bulk colour: write `value` into the OWN stored paper (mode "paper") or
+     *  ink (mode "ink", "auto" allowed) of every note openFolderCount() counts. Each note
+     *  stays individually changeable afterwards; this is not a folder-default rule.
+     *  Returns the refreshed manifest plus `applied` (how many notes), like setPaper(). */
+    Q_INVOKABLE QVariantMap applyColourToOpenFolder(const QString &mode, const QString &value);
 
     /** Select the palette offering the CHOICES. Repaints nothing; persisted so the panel
      *  reopens on the same palette. */

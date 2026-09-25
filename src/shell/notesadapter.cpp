@@ -245,6 +245,32 @@ QVariantMap NotesAdapter::setPaper(const QString &id, const QString &color)
     return load();
 }
 
+QVariantMap NotesAdapter::applyColourToOpenFolder(const QString &mode, const QString &value)
+{
+    if (!m_collection) {
+        return failure(QStringLiteral("No library is open"));
+    }
+    const bool ink = mode == QStringLiteral("ink");
+    if (!ink && mode != QStringLiteral("paper")) {
+        return failure(QStringLiteral("Colour mode must be \"paper\" or \"ink\""));
+    }
+    const QString resolved = ink ? Palette::normalizeInk(value) : Palette::normalizeColor(value);
+    if (resolved.isEmpty()) {
+        return failure(ink ? QStringLiteral("Note ink must be \"auto\" or a literal #rgb or #rrggbb value")
+                           : QStringLiteral("Note colour must be a literal #rgb or #rrggbb value"));
+    }
+    const QString folder = m_collection->openFolder();
+    const int applied = ink ? m_collection->setInkForFolder(folder, resolved)
+                            : m_collection->setPaperForFolder(folder, resolved);
+    if (applied < 0) {
+        return failure(QStringLiteral("Folder colour not saved; the library index is unwritable"));
+    }
+    emit changed();
+    QVariantMap result = load();
+    result.insert(QStringLiteral("applied"), applied);
+    return result;
+}
+
 QVariantMap NotesAdapter::setInk(const QString &id, const QString &value)
 {
     if (!m_collection || !m_collection->document(id)) {

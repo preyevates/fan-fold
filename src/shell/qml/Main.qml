@@ -230,6 +230,27 @@ PlasmaCore.Dialog {
      *  false, so an unguarded quit exits instantly and the application vanishes under a
      *  stray click on the power glyph while the footer is in use. */
     property bool confirmQuit: false
+    /** Bulk colour to the open folder is armed the same way: it overwrites every note's own
+     *  stored colour in one press, so the first press only says how many notes it will
+     *  touch and a second press within 4 s writes. Never a folder-default rule — afterwards
+     *  each note stays individually changeable. */
+    property bool confirmFolderColour: false
+    function applyColourToFolder() {
+        if(!dialog.confirmFolderColour) {
+            dialog.confirmArchiveId = ""; dialog.confirmTrashId = ""; dialog.confirmQuit = false
+            dialog.confirmFolderColour = true
+            confirmLapse.restart()
+            return
+        }
+        dialog.confirmFolderColour = false; confirmLapse.stop()
+        var ink = paletteMode === "ink"
+        var value = ink ? String(dialog.inkStored[dialog.selectedId]) : String(dialog.papers[dialog.selectedId])
+        var result = notesStore.applyColourToOpenFolder(ink ? "ink" : "paper", value)
+        if(result.ok) { applyManifest(result); syncEditorColours() }
+        else dialog.saveStatus = result.error
+    }
+    onPaletteOpenChanged: if(!paletteOpen) confirmFolderColour = false
+    onPaletteModeChanged: confirmFolderColour = false
     function armArchive() {
         dialog.confirmTrashId = ""; dialog.confirmQuit = false
         dialog.confirmArchiveId = dialog.confirmArchiveId === dialog.selectedId ? "" : dialog.selectedId
@@ -258,7 +279,8 @@ PlasmaCore.Dialog {
      *  minutes later, aimed at whatever the user thinks is there now, files a note. */
     property Timer confirmLapseTimer: Timer {
         id: confirmLapse; interval: 4000
-        onTriggered: { dialog.confirmArchiveId = ""; dialog.confirmTrashId = ""; dialog.confirmQuit = false }
+        onTriggered: { dialog.confirmArchiveId = ""; dialog.confirmTrashId = ""; dialog.confirmQuit = false
+                       dialog.confirmFolderColour = false }
     }
     /** True when the SELECTED note's own buffer differs from its file. `dirty` above is
      *  the aggregate across every note, which is the right input for the close guard and
@@ -332,7 +354,7 @@ PlasmaCore.Dialog {
     }
     // Selection change: disarm any destructive control (see confirmArchiveId) and re-read
     // the file facts. One handler, because QML allows only one per signal.
-    onSelectedIdChanged: { dialog.confirmArchiveId = ""; dialog.confirmTrashId = ""; refreshInfo() }
+    onSelectedIdChanged: { dialog.confirmArchiveId = ""; dialog.confirmTrashId = ""; dialog.confirmFolderColour = false; refreshInfo() }
     onSelectedDirtyChanged: refreshInfo()
     /** The family the OLD enum meant, used only when no family has been chosen yet: the
      *  in-memory half of the migration, so an appearance.json written before the font
@@ -1375,13 +1397,37 @@ PlasmaCore.Dialog {
                 text: (swatchPop.inkMode ? "Ink" : "Paper") + " · " + dialog.activePalette.label
                      + (swatchPop.inkMode && dialog.inkModes[dialog.selectedId]==="auto" ? " · Auto" : "")
                      + (themeList.open ? "  ▴" : "  ▾")
-                width: swatchPop.width-16; elide: Text.ElideRight
+                width: swatchPop.width-16-folderApply.width-10; elide: Text.ElideRight
                 MouseArea {
                     anchors.fill: parent; anchors.margins: -4
                     cursorShape: Qt.PointingHandCursor
                     onClicked: themeList.open = !themeList.open
                     Accessible.role: Accessible.Button
                     Accessible.name: "Choose a colour theme · current " + dialog.activePalette.label
+                }
+            }
+            /** One-time bulk write of THIS note's colour for the current mode into every live
+             *  note of the open folder. Arm-then-confirm: the label itself turns into the
+             *  question, and a lapse disarms (dialog.confirmFolderColour). */
+            Text {
+                id: folderApply; objectName: "swatch-apply-folder"
+                readonly property int count: dialog.manifest.folderCount !== undefined ? dialog.manifest.folderCount : 0
+                anchors.right: parent.right; anchors.rightMargin: 8; y: 4
+                font.family: dialog.noteFont; font.pixelSize: 9; color: dialog.ink
+                font.underline: dialog.confirmFolderColour
+                text: dialog.confirmFolderColour
+                      ? "Apply to " + count + (count === 1 ? " note?" : " notes?")
+                      : "Apply to folder"
+                MouseArea {
+                    objectName: "swatch-apply-folder-area"
+                    anchors.fill: parent; anchors.margins: -4
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: dialog.applyColourToFolder()
+                    Accessible.role: Accessible.Button
+                    Accessible.name: dialog.confirmFolderColour
+                        ? "Confirm: apply this " + (swatchPop.inkMode ? "ink" : "paper") + " to " + folderApply.count + " notes"
+                        : "Apply this " + (swatchPop.inkMode ? "ink" : "paper") + " to every note in the folder"
+                    Accessible.onPressAction: dialog.applyColourToFolder()
                 }
             }
             /** The theme chooser: every palette as name + its real colours. Mid grey ground,

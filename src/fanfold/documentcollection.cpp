@@ -1190,6 +1190,60 @@ bool DocumentCollection::setInk(const QString &id, const QString &ink)
     return ok;
 }
 
+QStringList DocumentCollection::liveIdsInFolder(const QString &folder) const
+{
+    const QString wanted = normalizedFolder(folder);
+    QStringList out;
+    for (const QString &id : m_catalog) {
+        const Document *document = m_documents.value(id);
+        if (!document || document->m_trashed || document->m_missing || document->m_archived) {
+            continue;
+        }
+        if (document->folder() == wanted) {
+            out.append(id);
+        }
+    }
+    return out;
+}
+
+int DocumentCollection::setColourForFolder(const QString &folder, const QString &value, bool ink)
+{
+    // Validate first: a refused value must leave every note exactly as it was.
+    const QString normalized = normalizedColor(value, ink);
+    if (!m_open || normalized.isEmpty()) {
+        return -1;
+    }
+    const QStringList ids = liveIdsInFolder(folder);
+    QList<Document *> touched;
+    for (const QString &id : ids) {
+        Document *document = m_documents.value(id);
+        QString &slot = ink ? document->m_ink : document->m_paper;
+        if (slot != normalized) {
+            slot = normalized;
+            touched.append(document);
+        }
+    }
+    bool ok = true;
+    if (!touched.isEmpty()) {
+        markMetadataDirty();
+        ok = persistMetadata();
+        for (Document *document : std::as_const(touched)) {
+            emitDocumentChanged(document);
+        }
+    }
+    return ok ? int(ids.size()) : -1;
+}
+
+int DocumentCollection::setPaperForFolder(const QString &folder, const QString &paper)
+{
+    return setColourForFolder(folder, paper, false);
+}
+
+int DocumentCollection::setInkForFolder(const QString &folder, const QString &ink)
+{
+    return setColourForFolder(folder, ink, true);
+}
+
 bool DocumentCollection::hasRecovery(const QString &id) const
 {
     return QFileInfo::exists(recoveryPath(id));

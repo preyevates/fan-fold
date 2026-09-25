@@ -116,6 +116,9 @@ private slots:
     void noOpReconciliationNeitherResetsTheModelNorRewritesMetadata();
     void renameMovesOneCatalogRowWithoutResettingTheModel();
     void discoversHundredsOfNotesAcrossSubfoldersWithoutChurn();
+
+    // 0.2.0-6: one-time bulk colour into a folder's notes, never a folder rule.
+    void folderColourIsAOneTimeWriteIntoEachNotesOwnColour();
 };
 
 void DocumentCollectionTest::discoversMarkdownRecursivelyWithoutFollowingLinks()
@@ -939,6 +942,64 @@ int main(int argc, char **argv)
     const int result = QTest::qExec(&test, argc, argv);
     QDir(xdg).removeRecursively();
     return result;
+}
+
+void DocumentCollectionTest::folderColourIsAOneTimeWriteIntoEachNotesOwnColour()
+{
+    Fixture f;
+    writeBytes(f.notes.filePath("Root.md"), "r\n");
+    writeBytes(f.notes.filePath("Work/Plan.md"), "p\n");
+    writeBytes(f.notes.filePath("Work/Agenda.md"), "a\n");
+    writeBytes(f.notes.filePath("Work/Pinned.md"), "n\n");
+    writeBytes(f.notes.filePath("Work/Filed.md"), "f\n");
+    writeBytes(f.notes.filePath("Work/Deep/Detail.md"), "d\n");
+    QString root, plan, agenda, pinned, filed, detail;
+    {
+        auto &collection = f.collection();
+        root = collection.idForRelativePath("Root.md");
+        plan = collection.idForRelativePath("Work/Plan.md");
+        agenda = collection.idForRelativePath("Work/Agenda.md");
+        pinned = collection.idForRelativePath("Work/Pinned.md");
+        filed = collection.idForRelativePath("Work/Filed.md");
+        detail = collection.idForRelativePath("Work/Deep/Detail.md");
+        QVERIFY(collection.setPaper(root, "#101010"));
+        QVERIFY(collection.setPaper(detail, "#202020"));
+        QVERIFY(collection.setPaper(filed, "#303030"));
+        QVERIFY(collection.setInk(filed, "#404040"));
+        QVERIFY(collection.archive(filed));
+        QVERIFY(collection.setPinned(pinned, true));
+
+        // Refused before anything is touched.
+        QCOMPARE(collection.setPaperForFolder(QStringLiteral("Work"), QStringLiteral("red")), -1);
+        QCOMPARE(collection.setInkForFolder(QStringLiteral("Work"), QStringLiteral("nope")), -1);
+        QVERIFY(collection.document(plan)->paper() != QStringLiteral("#ff0000"));
+
+        QSignalSpy changed(&collection, &DocumentCollection::documentChanged);
+        // The set: direct, live children, pinned included; archived and subfolder excluded.
+        QCOMPARE(collection.liveIdsInFolder(QStringLiteral("Work")).size(), 3);
+        QCOMPARE(collection.setPaperForFolder(QStringLiteral("Work"), QStringLiteral("#FF0000")), 3);
+        QCOMPARE(changed.count(), 3);
+        QCOMPARE(collection.setInkForFolder(QStringLiteral("Work"), QStringLiteral("auto")), 3);
+        for (const QString &id : {plan, agenda, pinned}) {
+            QCOMPARE(collection.document(id)->paper(), QStringLiteral("#ff0000"));
+            QCOMPARE(collection.document(id)->ink(), QStringLiteral("auto"));
+        }
+        // A note changed individually afterwards keeps its own value: no rule re-applies.
+        QVERIFY(collection.setPaper(agenda, "#00ff00"));
+    }
+    QCOMPARE(readBytes(f.notes.filePath("Work/Plan.md")), QByteArray("p\n"));
+
+    DocumentCollection reopened(f.state.path());
+    QVERIFY(reopened.openRoot(f.notes.path()));
+    QCOMPARE(reopened.document(plan)->paper(), QStringLiteral("#ff0000"));
+    QCOMPARE(reopened.document(pinned)->paper(), QStringLiteral("#ff0000"));
+    QCOMPARE(reopened.document(agenda)->paper(), QStringLiteral("#00ff00"));
+    // Other folders, a subfolder, and an archived note are untouched.
+    QCOMPARE(reopened.document(root)->paper(), QStringLiteral("#101010"));
+    QCOMPARE(reopened.document(detail)->paper(), QStringLiteral("#202020"));
+    QCOMPARE(reopened.document(filed)->paper(), QStringLiteral("#303030"));
+    QCOMPARE(reopened.document(filed)->ink(), QStringLiteral("#404040"));
+    QVERIFY(reopened.document(filed)->archived());
 }
 
 #include "tst_documentcollection.moc"
