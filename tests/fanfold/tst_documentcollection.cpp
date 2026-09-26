@@ -5,12 +5,14 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QPointer>
 #include <QSaveFile>
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QTest>
 #include <memory>
 #include <sys/stat.h>
+#include <unistd.h>
 
 #include "appearancesettings.h"
 #include "documentcollection.h"
@@ -41,6 +43,15 @@ quint64 inodeOf(const QString &path)
         return 0;
     }
     return static_cast<quint64>(metadata.st_ino);
+}
+
+QStringList displacedFiles(const QString &root)
+{
+    const QDir directory(QDir(root).filePath(QStringLiteral(".fanfold-displaced")));
+    QStringList files;
+    for (const QString &name : directory.entryList(QDir::Files | QDir::NoDotAndDotDot))
+        files.append(directory.filePath(name));
+    return files;
 }
 
 void atomicReplace(const QString &path, const QByteArray &bytes)
@@ -84,10 +95,19 @@ private slots:
     void assignsStableIdsAcrossRenameAndAtomicReplacement();
     void createsUniqueUntitledNotes();
     void debouncesAtomicAutosaveFor250Milliseconds();
+    void crossFilesystemStateRetainsDisplacedInodeBesideLibrary();
+    void repeatedSavesRetainOnlyOnePreviousGeneration();
+    void lateWriteToPreviousFdStopsNextSaveAndKeepsRecovery();
+    void trashCleansUnchangedDisplacedGeneration();
+    void trashLeavesChangedDisplacedInodeForInspection();
     void externalChangesNeverOverwriteDirtyContent();
     void externalDeleteKeepsDirtyRecoveryVisible();
     void pendingEditRecoversAfterCrashWithoutClobberingExternalChange();
     void normalCloseFlushesPendingSave();
+    void failedCloseFlushKeepsMarkdownAndReportsReason();
+    void discardCloseFlushesOtherNotesButNotSelected();
+    void failedOtherFlushDoesNotDiscardSelected();
+
     void archiveAndRestoreAreReversibleAndNoClobber();
     void trashAndRestoreNeverPermanentlyUnlink();
     void pinAndLiteralColoursPersistOutsideMarkdown();
@@ -110,6 +130,11 @@ private slots:
     void theOpenFolderIsRestoredAndFallsBackToTheRootWhenItIsGone();
     void aPreZeroTwoIndexMigratesWithoutLosingANote();
     void failedRootSwitchLeavesThePreviousLibraryIntact();
+    void invalidIndexCannotOrphanPendingRecovery();
+    void parseableIndexWithoutDocumentMapCannotOrphanPendingRecovery();
+    void parseableIndexWithInvalidDocumentEntryCannotOrphanPendingRecovery();
+    void failedFlushRefusesRootSwitchAndKeepsNativeBuffer();
+    void failedFlushRefusesCloseRootAndKeepsNativeBuffer();
     void successfulRootSwitchFlushesPendingSavesFirst();
     void archiveRestoreFallsBackToAUniqueNameInTheOriginalFolder();
     void exposesFileStatFieldsForTheInformationPanel();
@@ -197,6 +222,128 @@ void DocumentCollectionTest::debouncesAtomicAutosaveFor250Milliseconds()
     QCOMPARE(oldHandle.readAll(), QByteArray("old\n"));
 }
 
+void DocumentCollectionTest::crossFilesystemStateRetainsDisplacedInodeBesideLibrary()
+{
+    QTemporaryDir notes(QStringLiteral("/dev/shm/fanfold-notes-XXXXXX"));
+    QTemporaryDir state;
+    if (!notes.isValid()) QSKIP("/dev/shm is unavailable");
+    QVERIFY(state.isValid());
+    struct stat libraryStat {}, stateStat {};
+    QVERIFY(::stat(QFile::encodeName(notes.path()).constData(), &libraryStat) == 0);
+    QVERIFY(::stat(QFile::encodeName(state.path()).constData(), &stateStat) == 0);
+    if (libraryStat.st_dev == stateStat.st_dev) QSKIP("/dev/shm is not a separate filesystem");
+    const QString path = notes.filePath(QStringLiteral("Alpha.md"));
+    writeBytes(path, "old\n");
+    const quint64 previousInode = inodeOf(path);
+    DocumentCollection collection(state.path());
+    QVERIFY(collection.openRoot(notes.path()));
+    const QString id = collection.idForRelativePath(QStringLiteral("Alpha.md"));
+    QVERIFY(collection.updateContent(id, QStringLiteral("new\n")));
+    QVERIFY2(collection.saveNow(id), qPrintable(collection.document(id)->saveError()));
+    QCOMPARE(readBytes(path), QByteArray("new\n"));
+    QVERIFY(!collection.hasRecovery(id));
+    const QStringList backups = displacedFiles(notes.path());
+    QCOMPARE(backups.size(), 1);
+    QCOMPARE(inodeOf(backups.first()), previousInode);
+    QCOMPARE(readBytes(backups.first()), QByteArray("old\n"));
+    QVERIFY(collection.idForRelativePath(QStringLiteral(".fanfold-displaced/")) .isEmpty());
+}
+
+void DocumentCollectionTest::repeatedSavesRetainOnlyOnePreviousGeneration()
+{
+    // Bounded guarantee: one immediately preceding inode, NOT arbitrary-late
+    // writes through an fd whose inode aged out after a later successful save.
+    Fixture f;
+    const QString path = f.notes.filePath(QStringLiteral("Alpha.md"));
+    writeBytes(path, "v0\n");
+    auto &collection = f.collection();
+    const QString id = collection.idForRelativePath(QStringLiteral("Alpha.md"));
+    for (int revision = 1; revision <= 5; ++revision) {
+        const QByteArray before = readBytes(path);
+        const quint64 inode = inodeOf(path);
+        const QByteArray next = QByteArray("v") + QByteArray::number(revision) + '\n';
+        QVERIFY(collection.updateContent(id, QString::fromUtf8(next)));
+        QVERIFY2(collection.saveNow(id), qPrintable(collection.document(id)->saveError()));
+        QCOMPARE(readBytes(path), next);
+        const QStringList backups = displacedFiles(f.notes.path());
+        QCOMPARE(backups.size(), 1);
+        QCOMPARE(inodeOf(backups.first()), inode);
+        QCOMPARE(readBytes(backups.first()), before);
+        QCOMPARE(collection.documentIds().size(), 1);
+    }
+}
+
+void DocumentCollectionTest::lateWriteToPreviousFdStopsNextSaveAndKeepsRecovery()
+{
+    Fixture f;
+    const QString path = f.notes.filePath(QStringLiteral("Alpha.md"));
+    writeBytes(path, "v0\n");
+    QFile previous(path);
+    QVERIFY(previous.open(QIODevice::WriteOnly | QIODevice::Append));
+    auto &collection = f.collection();
+    const QString id = collection.idForRelativePath(QStringLiteral("Alpha.md"));
+    QVERIFY(collection.updateContent(id, QStringLiteral("v1\n")));
+    QVERIFY2(collection.saveNow(id), qPrintable(collection.document(id)->saveError()));
+    const QStringList backups = displacedFiles(f.notes.path());
+    QCOMPARE(backups.size(), 1);
+    f.value.reset(); // Retention and expected revision must survive a process restart.
+    auto &reopened = f.collection();
+    QCOMPARE(reopened.idForRelativePath(QStringLiteral("Alpha.md")), id);
+    QCOMPARE(previous.write("external late\n"), qint64(14));
+    QVERIFY(previous.flush());
+    QCOMPARE(readBytes(backups.first()), QByteArray("v0\nexternal late\n"));
+    QVERIFY(reopened.updateContent(id, QStringLiteral("v2 local\n")));
+    QVERIFY(!reopened.saveNow(id));
+    QVERIFY(reopened.document(id)->conflict());
+    QVERIFY(reopened.document(id)->dirty());
+    QVERIFY(reopened.hasRecovery(id));
+    QCOMPARE(reopened.document(id)->content(), QStringLiteral("v2 local\n"));
+    QCOMPARE(readBytes(path), QByteArray("v1\n"));
+    QCOMPARE(readBytes(backups.first()), QByteArray("v0\nexternal late\n"));
+    f.value.reset();
+    auto &afterCrash = f.collection();
+    QVERIFY(afterCrash.document(id));
+    QVERIFY(afterCrash.document(id)->conflict());
+    QCOMPARE(afterCrash.document(id)->content(), QStringLiteral("v2 local\n"));
+    QCOMPARE(readBytes(path), QByteArray("v1\n"));
+}
+
+void DocumentCollectionTest::trashCleansUnchangedDisplacedGeneration()
+{
+    Fixture f;
+    const QString path = f.notes.filePath(QStringLiteral("Alpha.md"));
+    writeBytes(path, "v0\n");
+    auto &collection = f.collection();
+    const QString id = collection.idForRelativePath(QStringLiteral("Alpha.md"));
+    QVERIFY(collection.updateContent(id, QStringLiteral("v1\n")));
+    QVERIFY(collection.saveNow(id));
+    QCOMPARE(displacedFiles(f.notes.path()).size(), 1);
+    QVERIFY(collection.moveToTrash(id));
+    QVERIFY(collection.document(id)->trashed());
+    QCOMPARE(displacedFiles(f.notes.path()).size(), 0);
+    QVERIFY(!collection.hasRecovery(id));
+}
+
+void DocumentCollectionTest::trashLeavesChangedDisplacedInodeForInspection()
+{
+    Fixture f;
+    const QString path = f.notes.filePath(QStringLiteral("Alpha.md"));
+    writeBytes(path, "v0\n");
+    QFile oldFd(path);
+    QVERIFY(oldFd.open(QIODevice::WriteOnly | QIODevice::Append));
+    auto &collection = f.collection();
+    const QString id = collection.idForRelativePath(QStringLiteral("Alpha.md"));
+    QVERIFY(collection.updateContent(id, QStringLiteral("v1\n")));
+    QVERIFY(collection.saveNow(id));
+    const QStringList backups = displacedFiles(f.notes.path());
+    QCOMPARE(backups.size(), 1);
+    QCOMPARE(oldFd.write("late\n"), qint64(5));
+    QVERIFY(oldFd.flush());
+    QVERIFY(collection.moveToTrash(id));
+    QCOMPARE(displacedFiles(f.notes.path()), backups);
+    QCOMPARE(readBytes(backups.first()), QByteArray("v0\nlate\n"));
+}
+
 void DocumentCollectionTest::externalChangesNeverOverwriteDirtyContent()
 {
     Fixture f;
@@ -268,6 +415,85 @@ void DocumentCollectionTest::normalCloseFlushesPendingSave()
     QCOMPARE(readBytes(f.notes.filePath("Alpha.md")), QByteArray("closing\n"));
     QVERIFY(!collection.hasRecovery(id));
 }
+
+void DocumentCollectionTest::failedCloseFlushKeepsMarkdownAndReportsReason()
+{
+    Fixture f;
+    const QString markdown = f.notes.filePath("Alpha.md");
+    writeBytes(markdown, "B\n");
+    auto &collection = f.collection();
+    const QString id = collection.idForRelativePath("Alpha.md");
+    QVERIFY(collection.updateContent(id, QStringLiteral("A\n")));
+    QVERIFY(collection.hasRecovery(id));
+    QVERIFY(::chmod(QFile::encodeName(f.notes.path()).constData(), 0500) == 0);
+    const bool flushed = collection.flushPendingSaves();
+    // Restore access before assertions so QTemporaryDir cleanup works on failure.
+    QVERIFY(::chmod(QFile::encodeName(f.notes.path()).constData(), 0700) == 0);
+    QVERIFY(!flushed);
+    QCOMPARE(readBytes(markdown), QByteArray("B\n"));
+    QVERIFY(collection.document(id)->dirty());
+    QVERIFY(collection.hasRecovery(id));
+    QVERIFY2(collection.lastError().contains(QStringLiteral("Atomic autosave staging failed"))
+                 || collection.lastError().contains(QStringLiteral("Cannot reserve displaced inode directory")),
+             qPrintable(collection.lastError()));
+    QVERIFY(collection.flushPendingSaves());
+    QCOMPARE(readBytes(markdown), QByteArray("A\n"));
+    QVERIFY(collection.lastError().isEmpty());
+    QVERIFY(!collection.hasRecovery(id));
+}
+
+void DocumentCollectionTest::discardCloseFlushesOtherNotesButNotSelected()
+{
+    Fixture f;
+    const QString selectedPath = f.notes.filePath("Selected.md");
+    const QString otherPath = f.notes.filePath("Other.md");
+    writeBytes(selectedPath, "selected original\n");
+    writeBytes(otherPath, "other original\n");
+    auto &collection = f.collection();
+    const QString selected = collection.idForRelativePath("Selected.md");
+    const QString other = collection.idForRelativePath("Other.md");
+    QVERIFY(collection.updateContent(selected, QStringLiteral("selected discarded\n")));
+    QVERIFY(collection.updateContent(other, QStringLiteral("other preserved\n")));
+    bool flushed = false;
+    QVERIFY2(QMetaObject::invokeMethod(&collection, "discardSelectedAfterFlushingOthers",
+                                   Q_RETURN_ARG(bool, flushed), Q_ARG(QString, selected)),
+             "discard-close native flush must expose a selected-note exclusion");
+    QVERIFY(flushed);
+    QCOMPARE(readBytes(selectedPath), QByteArray("selected original\n"));
+    QVERIFY(!collection.document(selected)->dirty());
+    QCOMPARE(readBytes(otherPath), QByteArray("other preserved\n"));
+    QVERIFY(!collection.document(other)->dirty());
+    // Simulate the process ending without closeRoot (which is not a shutdown gate).
+    f.value.reset();
+    auto &reopened = f.collection();
+    QCOMPARE(readBytes(selectedPath), QByteArray("selected original\n"));
+    QCOMPARE(reopened.document(selected)->content(), QStringLiteral("selected original\n"));
+    QVERIFY(!reopened.hasRecovery(selected));
+    QCOMPARE(reopened.document(other)->content(), QStringLiteral("other preserved\n"));
+}
+
+void DocumentCollectionTest::failedOtherFlushDoesNotDiscardSelected()
+{
+    Fixture f;
+    const QString selectedPath = f.notes.filePath("Selected.md");
+    const QString otherPath = f.notes.filePath("Other.md");
+    writeBytes(selectedPath, "selected original\n");
+    writeBytes(otherPath, "other original\n");
+    auto &collection = f.collection();
+    const QString selected = collection.idForRelativePath("Selected.md");
+    const QString other = collection.idForRelativePath("Other.md");
+    QVERIFY(collection.updateContent(selected, QStringLiteral("selected pending\n")));
+    QVERIFY(collection.updateContent(other, QStringLiteral("other pending\n")));
+    QVERIFY(::chmod(QFile::encodeName(f.notes.path()).constData(), 0500) == 0);
+    const bool discarded = collection.discardSelectedAfterFlushingOthers(selected);
+    QVERIFY(::chmod(QFile::encodeName(f.notes.path()).constData(), 0700) == 0);
+    QVERIFY(!discarded);
+    QVERIFY(collection.hasRecovery(selected));
+    QVERIFY(collection.document(selected)->dirty());
+    QCOMPARE(readBytes(selectedPath), QByteArray("selected original\n"));
+    QCOMPARE(readBytes(otherPath), QByteArray("other original\n"));
+}
+
 
 void DocumentCollectionTest::archiveAndRestoreAreReversibleAndNoClobber()
 {
@@ -733,6 +959,214 @@ void DocumentCollectionTest::failedRootSwitchLeavesThePreviousLibraryIntact()
     QVERIFY(collection.document(id));
     QCOMPARE(collection.document(id)->content(), QStringLiteral("unsaved\n"));
     QVERIFY(collection.document(id)->dirty());
+}
+
+void DocumentCollectionTest::invalidIndexCannotOrphanPendingRecovery()
+{
+    Fixture f;
+    const QString markdown = f.notes.filePath("Alpha.md");
+    writeBytes(markdown, "on disk\n");
+    QString id;
+    QString indexPath;
+    {
+        DocumentCollection crashed(f.state.path());
+        QVERIFY(crashed.openRoot(f.notes.path()));
+        id = crashed.idForRelativePath("Alpha.md");
+        QVERIFY(crashed.updateContent(id, QStringLiteral("pending\n")));
+        QVERIFY(crashed.hasRecovery(id));
+        indexPath = crashed.metadataPath();
+    }
+
+    // An unreadable or newer index cannot map the old recovery ID to its Markdown
+    // path. Refuse to replace it with newly assigned IDs; preserve both for repair.
+    const QByteArray originalIndex = readBytes(indexPath);
+    QVERIFY(!originalIndex.isEmpty());
+    QJsonObject future = QJsonDocument::fromJson(originalIndex).object();
+    future.insert(QStringLiteral("version"), 999);
+    const QString journal = QFileInfo(indexPath).dir().filePath("recovery/" + id + ".json");
+    for (const QByteArray &damaged : {QByteArray("not JSON"), QJsonDocument(future).toJson()}) {
+        atomicReplace(indexPath, damaged);
+        DocumentCollection reopened(f.state.path());
+        QVERIFY(!reopened.openRoot(f.notes.path()));
+        QVERIFY(!reopened.lastError().isEmpty());
+        QVERIFY(!reopened.isOpen());
+        QCOMPARE(readBytes(indexPath), damaged);
+        QCOMPARE(readBytes(markdown), QByteArray("on disk\n"));
+        QVERIFY(QFileInfo::exists(journal));
+    }
+    atomicReplace(indexPath, originalIndex);
+    DocumentCollection repaired(f.state.path());
+    QVERIFY(repaired.openRoot(f.notes.path()));
+    QCOMPARE(repaired.idForRelativePath("Alpha.md"), id);
+    QCOMPARE(repaired.document(id)->content(), QStringLiteral("pending\n"));
+    QVERIFY(repaired.document(id)->dirty());
+    QCOMPARE(readBytes(markdown), QByteArray("on disk\n"));
+}
+
+void DocumentCollectionTest::parseableIndexWithoutDocumentMapCannotOrphanPendingRecovery()
+{
+    Fixture f;
+    const QString markdown = f.notes.filePath("Alpha.md");
+    writeBytes(markdown, "on disk\n");
+    QString id;
+    QString indexPath;
+    {
+        DocumentCollection crashed(f.state.path());
+        QVERIFY(crashed.openRoot(f.notes.path()));
+        id = crashed.idForRelativePath("Alpha.md");
+        QVERIFY(!id.isEmpty());
+        QVERIFY(crashed.updateContent(id, QStringLiteral("pending edit\n")));
+        QVERIFY(crashed.hasRecovery(id));
+        indexPath = crashed.metadataPath();
+    } // No flush: model a crash with the journal as the only copy of the edit.
+
+    const QByteArray originalIndex = readBytes(indexPath);
+    QVERIFY(!originalIndex.isEmpty());
+    const QString journal = QFileInfo(indexPath).dir().filePath("recovery/" + id + ".json");
+    const QByteArray originalJournal = readBytes(journal);
+    QVERIFY(!originalJournal.isEmpty());
+    QJsonObject malformed = QJsonDocument::fromJson(originalIndex).object();
+    QCOMPARE(malformed.value(QStringLiteral("version")).toInt(), 2);
+    QCOMPARE(malformed.value(QStringLiteral("root")).toString(), QFileInfo(f.notes.path()).canonicalFilePath());
+    malformed.insert(QStringLiteral("documents"), QJsonArray{});
+    const QByteArray damagedIndex = QJsonDocument(malformed).toJson();
+    atomicReplace(indexPath, damagedIndex);
+
+    DocumentCollection reopened(f.state.path());
+    QVERIFY2(!reopened.openRoot(f.notes.path()), "A parseable index with documents:[] must be refused");
+    QVERIFY(!reopened.lastError().isEmpty());
+    QVERIFY(!reopened.isOpen());
+    QCOMPARE(readBytes(indexPath), damagedIndex);
+    QCOMPARE(readBytes(journal), originalJournal);
+    QCOMPARE(readBytes(markdown), QByteArray("on disk\n"));
+
+    atomicReplace(indexPath, originalIndex);
+    DocumentCollection repaired(f.state.path());
+    QVERIFY2(repaired.openRoot(f.notes.path()), qPrintable(repaired.lastError()));
+    QCOMPARE(repaired.idForRelativePath("Alpha.md"), id);
+    QVERIFY(repaired.document(id));
+    QCOMPARE(repaired.document(id)->content(), QStringLiteral("pending edit\n"));
+    QVERIFY(repaired.document(id)->dirty());
+    QCOMPARE(readBytes(journal), originalJournal);
+    QCOMPARE(readBytes(markdown), QByteArray("on disk\n"));
+}
+
+void DocumentCollectionTest::parseableIndexWithInvalidDocumentEntryCannotOrphanPendingRecovery()
+{
+    Fixture f;
+    const QString markdown = f.notes.filePath("Alpha.md");
+    writeBytes(markdown, "on disk\n");
+    QString id;
+    QString indexPath;
+    {
+        DocumentCollection crashed(f.state.path());
+        QVERIFY(crashed.openRoot(f.notes.path()));
+        id = crashed.idForRelativePath("Alpha.md");
+        QVERIFY(crashed.updateContent(id, QStringLiteral("pending edit\n")));
+        indexPath = crashed.metadataPath();
+    }
+    const QByteArray originalIndex = readBytes(indexPath);
+    QVERIFY(!originalIndex.isEmpty());
+    const QString journal = QFileInfo(indexPath).dir().filePath("recovery/" + id + ".json");
+    const QByteArray originalJournal = readBytes(journal);
+    QVERIFY(!originalJournal.isEmpty());
+    QJsonObject damaged = QJsonDocument::fromJson(originalIndex).object();
+    QJsonObject documents = damaged.value(QStringLiteral("documents")).toObject();
+    QVERIFY(documents.contains(id));
+    documents.insert(id, QJsonObject{{QStringLiteral("path"), QJsonArray{}}});
+    damaged.insert(QStringLiteral("documents"), documents);
+    const QByteArray damagedIndex = QJsonDocument(damaged).toJson();
+    atomicReplace(indexPath, damagedIndex);
+
+    DocumentCollection reopened(f.state.path());
+    QVERIFY2(!reopened.openRoot(f.notes.path()), "A document entry without a string path must be refused");
+    QVERIFY(!reopened.isOpen());
+    QCOMPARE(readBytes(indexPath), damagedIndex);
+    QCOMPARE(readBytes(journal), originalJournal);
+    QCOMPARE(readBytes(markdown), QByteArray("on disk\n"));
+
+    atomicReplace(indexPath, originalIndex);
+    DocumentCollection repaired(f.state.path());
+    QVERIFY2(repaired.openRoot(f.notes.path()), qPrintable(repaired.lastError()));
+    QCOMPARE(repaired.idForRelativePath("Alpha.md"), id);
+    QCOMPARE(repaired.document(id)->content(), QStringLiteral("pending edit\n"));
+    QVERIFY(repaired.document(id)->dirty());
+}
+
+void DocumentCollectionTest::failedFlushRefusesRootSwitchAndKeepsNativeBuffer()
+{
+    Fixture f;
+    QTemporaryDir second;
+    QVERIFY(second.isValid());
+    const QString markdown = f.notes.filePath("Alpha.md");
+    writeBytes(markdown, "on disk\n");
+    writeBytes(second.filePath("Other.md"), "other\n");
+    auto &collection = f.collection();
+    const QString id = collection.idForRelativePath("Alpha.md");
+    QPointer<Document> original = collection.document(id);
+    const QString recoveryDir = QFileInfo(collection.metadataPath()).dir().filePath("recovery");
+    const QString blockedRecord = QDir(recoveryDir).filePath(id + ".json");
+    // A directory at the journal filename makes the recovery write fail even as root.
+    QVERIFY(QDir().mkpath(blockedRecord));
+    QVERIFY(::chmod(QFile::encodeName(recoveryDir).constData(), 0500) == 0);
+    const bool journaled = collection.updateContent(id, QStringLiteral("memory only\n"));
+    QVERIFY(!journaled);
+    QCOMPARE(collection.document(id)->content(), QStringLiteral("memory only\n"));
+    QVERIFY(collection.document(id)->dirty());
+    QCOMPARE(readBytes(markdown), QByteArray("on disk\n"));
+
+    QSignalSpy resets(&collection, &QAbstractItemModel::modelAboutToBeReset);
+    QSignalSpy roots(&collection, &DocumentCollection::rootChanged);
+    const bool switched = collection.openRoot(second.path());
+    QVERIFY(::chmod(QFile::encodeName(recoveryDir).constData(), 0700) == 0);
+    QVERIFY(!switched);
+    QVERIFY2(collection.lastError().contains(QStringLiteral("Recovery write failed")),
+             qPrintable(collection.lastError()));
+    QCOMPARE(resets.size(), 0);
+    QCOMPARE(roots.size(), 0);
+    QCOMPARE(collection.rootPath(), QFileInfo(f.notes.path()).canonicalFilePath());
+    QCOMPARE(collection.catalogIds(), (QStringList{id}));
+    QCOMPARE(collection.fanIds(), (QStringList{id}));
+    QVERIFY(original);
+    QCOMPARE(collection.document(id), original.data());
+    QCOMPARE(original->content(), QStringLiteral("memory only\n"));
+    QVERIFY(original->dirty());
+    QCOMPARE(readBytes(markdown), QByteArray("on disk\n"));
+
+    QVERIFY(QDir().rmdir(blockedRecord));
+    QVERIFY2(collection.openRoot(second.path()), qPrintable(collection.lastError()));
+    QCOMPARE(readBytes(markdown), QByteArray("memory only\n"));
+    QCOMPARE(collection.rootPath(), QFileInfo(second.path()).canonicalFilePath());
+}
+
+void DocumentCollectionTest::failedFlushRefusesCloseRootAndKeepsNativeBuffer()
+{
+    Fixture f;
+    const QString markdown = f.notes.filePath("Alpha.md");
+    writeBytes(markdown, "on disk\n");
+    auto &collection = f.collection();
+    const QString id = collection.idForRelativePath("Alpha.md");
+    QPointer<Document> original = collection.document(id);
+    const QString recoveryDir = QFileInfo(collection.metadataPath()).dir().filePath("recovery");
+    const QString blockedRecord = QDir(recoveryDir).filePath(id + ".json");
+    QVERIFY(QDir().mkpath(blockedRecord));
+    QVERIFY(::chmod(QFile::encodeName(recoveryDir).constData(), 0500) == 0);
+    QVERIFY(!collection.updateContent(id, QStringLiteral("memory only\n")));
+    QSignalSpy resets(&collection, &QAbstractItemModel::modelAboutToBeReset);
+    QSignalSpy roots(&collection, &DocumentCollection::rootChanged);
+    collection.closeRoot();
+    QVERIFY(::chmod(QFile::encodeName(recoveryDir).constData(), 0700) == 0);
+    QCOMPARE(resets.size(), 0);
+    QCOMPARE(roots.size(), 0);
+    QCOMPARE(collection.rootPath(), QFileInfo(f.notes.path()).canonicalFilePath());
+    QCOMPARE(collection.document(id), original.data());
+    QCOMPARE(original->content(), QStringLiteral("memory only\n"));
+    QVERIFY(original->dirty());
+    QCOMPARE(readBytes(markdown), QByteArray("on disk\n"));
+    QVERIFY(QDir().rmdir(blockedRecord));
+    collection.closeRoot();
+    QVERIFY(!collection.isOpen());
+    QCOMPARE(readBytes(markdown), QByteArray("memory only\n"));
 }
 
 void DocumentCollectionTest::successfulRootSwitchFlushesPendingSavesFirst()

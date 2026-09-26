@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- AppStream metadata for software centres; installed to /usr/share/metainfo.
+     Visibility in Discover also depends on repository and backend configuration. -->
+<component type="desktop-application">
+  <id>io.github.preyevates.FanFold</id>
+  <!-- Discover's PackageKit backend needs the native package name to associate this
+       component with an installable or installed Debian package. -->
+  <pkgname>fanfold</pkgname>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <name>Fan Fold</name>
+  <summary>Local-first Markdown notes at the screen edge</summary>
+  <developer id="io.github.preyevates">
+    <name>preyevates</name>
+  </developer>
+  <description>
+    <p>
+      Fan Fold edits ordinary Markdown files in a folder you choose. Notes are never copied
+      into an application database, so the folder stays readable, searchable and syncable by
+      any other tool.
+    </p>
+    <p>
+      The window rests at the screen edge and fans your notes out as overlapping cards.
+      Features include:
+    </p>
+    <ul>
+      <li>A folder library with whole-library search</li>
+      <li>Rich-text Markdown editing that works fully offline</li>
+      <li>Autosave with conflict recovery</li>
+      <li>Archive, restore and desktop trash</li>
+      <li>Movable pinned note windows</li>
+      <li>Per-note paper and ink colours, and global typography settings</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">io.github.preyevates.FanFold.desktop</launchable>
+  <icon type="stock">io.github.preyevates.FanFold</icon>
+  <url type="homepage">https://github.com/preyevates/fan-fold</url>
+  <screenshots>
+    <screenshot type="default">
+      <image type="source" width="716" height="878">https://raw.githubusercontent.com/preyevates/fan-fold/main/docs/fan-fold/media/note-open.png</image>
+      <caption>An open Markdown note with a table, code block and coloured fan tabs</caption>
+    </screenshot>
+    <screenshot>
+      <image type="source" width="716" height="878">https://raw.githubusercontent.com/preyevates/fan-fold/main/docs/fan-fold/media/settings.png</image>
+      <caption>Appearance and notes-folder settings</caption>
+    </screenshot>
+    <screenshot>
+      <image type="source" width="716" height="906">https://raw.githubusercontent.com/preyevates/fan-fold/main/docs/fan-fold/media/format-toolbar.png</image>
+      <caption>The Markdown formatting toolbar</caption>
+    </screenshot>
+  </screenshots>
+  <categories>
+    <category>Utility</category>
+    <category>TextEditor</category>
+  </categories>
+  <keywords>
+    <keyword>notes</keyword>
+    <keyword>markdown</keyword>
+    <keyword>sticky</keyword>
+    <keyword>local</keyword>
+  </keywords>
+  <provides>
+    <binary>fanfold</binary>
+  </provides>
+  <supports>
+    <control>pointing</control>
+    <control>keyboard</control>
+  </supports>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="0.2.0" date="2026-09-25"/>
+  </releases>
+</component>

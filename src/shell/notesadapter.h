@@ -89,6 +89,7 @@ signals:
 
 private:
     QVariantMap failure(const QString &message) const;
+    QVariantMap loadWithOrder(const QStringList *requestedOrder);
 
     /** The fan ids that actually have something to render.
      *

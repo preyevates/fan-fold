@@ -41,26 +41,128 @@ fan.changed = () => {
     if (!s.loaded) return;
     const text = fan.editors[0].getValue();
     s.dirty = text !== s.baseline;
-    s.status = fan.status();
+    s.status = s.failedPush ? "Recovery write failed: latest edits may exist only in memory; keep this window open" : fan.status();
     fan.publish();
-    if (s.dirty && !s.busy) { s.pushed = text; pinned.noteEdited(noteId, text); }
+    // Undo can clean the UI before native autosave fires; the prior edit is still
+    // pending there, so forward the reversion too.
+    if (!s.busy && (s.dirty || (s.pushed !== undefined && s.pushed !== text))) {
+        s.pushed = text;
+        s.pendingPushes = (s.pendingPushes || 0) + 1;
+        if (!s.pushPromises) s.pushPromises = new Set();
+        const push = fan.call("noteEdited", noteId, text).then(ok => {
+            s.pendingPushes--;
+            if (ok === true) {
+                s.lastAcknowledgedPush = text;
+                if (s.pushed === text) {
+                    s.failedPush = false;
+                    s.status = fan.status();
+                    fan.publish();
+                }
+            }
+            if (ok === false && s.pushed === text) {
+                s.failedPush = true;
+                s.status = "Recovery write failed: latest edits may exist only in memory; keep this window open";
+                s.dirty = true;
+                fan.publish();
+            }
+            return ok;
+        });
+        s.pushPromises.add(push);
+        push.then(() => s.pushPromises.delete(push));
+        s.pendingPush = push;
+    }
 };
 
-fan.save = async () => {
+fan.save = async (force = false) => {
     const s = fan.state;
-    if (!s.loaded || s.busy) return;
+    if (!s.loaded) return {ok: false, error: "Note not ready"};
+    if (s.busy) return s.busySave;
     fan.changed();
-    if (!s.dirty) return;
+    if (!s.dirty && !force) return {ok: true};
     const expected = s.revision, text = fan.editors[0].getValue();
     s.busy = true; s.status = "Unsaved"; fan.publish();
-    const r = await fan.call("saveNote", noteId, text, expected);
-    s.busy = false;
+    s.busySave = fan.call("saveNote", noteId, text, expected);
+    const r = await s.busySave;
+    s.busy = false; s.busySave = null;
     if (r.ok) {
+        s.failedPush = false;
         s.revision = r.revision; s.baseline = text; s.external = false;
+        // A successful explicit save reasserts this value after older push acknowledgments.
+        s.lastAcknowledgedPush = text;
         s.dirty = fan.editors[0].getValue() !== text; s.status = fan.status();
+        if (s.dirty) fan.changed(); // tail typed while the bridge was busy
     } else { s.status = r.error; s.dirty = true; }
     fan.publish();
     return r;
+};
+
+fan.closeReady = () => {
+    const s = fan.state;
+    if (!s || !s.loaded || s.busy || s.pendingPushes > 0 || s.failedPush || s.status?.includes("failed")) return false;
+    const text = fan.editors[0]?.getValue();
+    if (text === undefined) return false;
+    if (text !== s.pushed && text !== s.baseline) { fan.changed(); return false; }
+    if (s.lastAcknowledgedPush !== undefined && s.lastAcknowledgedPush !== text) {
+        s.pushed = null;
+        fan.changed();
+        return false;
+    }
+    return true;
+};
+
+/** Do not return a pinned window to the fan until the *latest* editor value is
+ * persisted. Lock input before yielding to WebChannel; on failure leave it open. */
+fan.closeSafely = async (generation = fan.closeGeneration) => {
+    const s = fan.state;
+    if (!s || !s.loaded) return false;
+    const current = () => generation === fan.closeGeneration;
+    const editorElement = fan.frames[0]?.contentDocument.getElementById("editor");
+    const refuse = () => { if (current() && editorElement) editorElement.inert = false; return false; };
+    if (editorElement) editorElement.inert = true;
+    if (s.busy) await s.busySave;
+    if (!current()) return false;
+    fan.changed();
+    if (s.dirty) {
+        const r = await fan.save();
+        if (!current()) return false;
+        if (!r || !r.ok) return refuse();
+    }
+    const pending = [...(s.pushPromises || [])];
+    const acknowledgments = await Promise.all(pending);
+    if (!current()) return false;
+    // WebChannel calls can complete out of order. Even if the newest push
+    // succeeded, a late older push may now be the native autosave buffer.
+    if (acknowledgments.includes(false)
+        || (s.lastAcknowledgedPush !== undefined
+            && s.lastAcknowledgedPush !== fan.editors[0].getValue())) {
+        const r = await fan.save(true);
+        if (!current()) return false;
+        if (!r || !r.ok) return refuse();
+    }
+    if (!fan.closeReady() || fan.editors[0].getValue() !== s.baseline || s.dirty)
+        return refuse();
+    return true;
+};
+
+// WebEngineView.runJavaScript cannot return a Promise. Start the asynchronous bridge
+// write in the page and expose only a primitive acknowledgment for QML to poll.
+fan.closeResult = 0;
+fan.closeGeneration = 0;
+fan.beginClose = () => {
+    const generation = ++fan.closeGeneration;
+    fan.closeResult = 0;
+    fan.closeSafely(generation).then(ok => {
+        if (generation === fan.closeGeneration) fan.closeResult = ok === true ? 1 : -1;
+    }, () => {
+        if (generation === fan.closeGeneration) { fan.cancelClose(); fan.closeResult = -1; }
+    });
+    return true;
+};
+fan.cancelClose = () => {
+    ++fan.closeGeneration;
+    fan.closeResult = -1;
+    const editorElement = fan.frames[0]?.contentDocument.getElementById("editor");
+    if (editorElement) editorElement.inert = false;
 };
 
 /** Reconciliation, on the same engine-authoritative terms as the deck: `committed` means
@@ -68,14 +170,22 @@ fan.save = async () => {
 fan.poll = async () => {
     const s = fan.state;
     if (!s || !s.loaded || s.busy) return;
+    const pushedAtProbe = s.pushed;
     const r = await fan.call("probeNote", noteId);
     if (!r.ok) { s.status = r.error; fan.publish(); return; }
+    if (r.saveError && r.saveError.includes("Recovery write failed")) {
+        s.status = r.saveError; s.dirty = true; fan.publish(); return;
+    }
+    if (s.failedPush) {
+        s.status = "Recovery write failed: latest edits may exist only in memory; keep this window open";
+        s.dirty = true; fan.publish(); return;
+    }
     if (r.conflict) { s.external = true; s.status = fan.status(); fan.publish(); return; }
     if (r.committed) {
         // Re-baseline to what was COMMITTED, not to the live buffer; then re-check, so a
         // tail typed during the write is pushed rather than declared clean. See app.js.
         s.revision = r.revision; s.external = false;
-        s.baseline = (s.pushed !== undefined) ? s.pushed : fan.editors[0].getValue();
+        s.baseline = (pushedAtProbe !== undefined) ? pushedAtProbe : fan.editors[0].getValue();
         s.dirty = false;
         s.status = fan.status();
         fan.publish();

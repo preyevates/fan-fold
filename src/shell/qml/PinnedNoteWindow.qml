@@ -31,6 +31,7 @@ Window {
     property real iconSize: 16
     property string status: "Saved"
     property bool noteDirty: false
+    property bool editorEnabled: true
 
     signal closeRequested(string id)
 
@@ -56,13 +57,79 @@ Window {
                                                     pinnedWindow.width, pinnedWindow.height)
     }
 
-    // A pinned note's unsaved buffer must reach disk before the window goes away. The
-    // engine's journal would recover it anyway, but a clean close should not depend on
-    // crash recovery to keep the user's words.
+    property bool closeCheckPending: false
+    property int closeAttempt: 0
+    property string closeSaveError: ""
+    Timer {
+        id: closeDeadline
+        interval: 5000; repeat: false
+        onTriggered: pinnedWindow.abortSafeClose()
+    }
+    Timer {
+        id: closePoll
+        interval: 40; repeat: false
+        onTriggered: {
+            const attempt = pinnedWindow.closeAttempt
+            pinnedEditor.runJavaScript("window.fan && fan.closeResult", function(result) {
+                if (!pinnedWindow.closeCheckPending || attempt !== pinnedWindow.closeAttempt) return
+                if (result === 0) { closePoll.start(); return }
+                if (result === 1) {
+                    // The bridge result predates this callback. Re-read the live value and
+                    // every outstanding push immediately before committing native Markdown.
+                    pinnedEditor.runJavaScript("window.fan && fan.closeReady() && fan.editors[0].getValue() === fan.state.baseline && !fan.state.dirty", function(ready) {
+                        if (!pinnedWindow.closeCheckPending || attempt !== pinnedWindow.closeAttempt) return
+                        if (ready !== true) {
+                            pinnedWindow.closeSaveError = "Close refused · editor changed or push pending; retry"
+                            pinnedWindow.status = pinnedWindow.closeSaveError
+                            pinnedEditor.runJavaScript("window.fan && fan.cancelClose()")
+                        } else if (!collection.saveNow(pinnedWindow.documentId)) {
+                            pinnedWindow.closeSaveError = "Close refused · "
+                                + (pinnedWindow.record && pinnedWindow.record.saveError
+                                   ? pinnedWindow.record.saveError : "Unable to save this note; retry")
+                            pinnedWindow.status = pinnedWindow.closeSaveError
+                            pinnedEditor.runJavaScript("window.fan && fan.cancelClose()")
+                        } else {
+                            pinnedWindow.closeSaveError = ""
+                            pinnedWindow.closeRequested(pinnedWindow.documentId)
+                        }
+                        closeDeadline.stop()
+                        pinnedWindow.closeCheckPending = false
+                    })
+                    return
+                }
+                closeDeadline.stop()
+                pinnedWindow.closeCheckPending = false
+            })
+        }
+    }
+    function abortSafeClose() {
+        if (!pinnedWindow.closeCheckPending) return
+        pinnedWindow.closeCheckPending = false
+        pinnedWindow.closeAttempt++
+        closePoll.stop()
+        closeDeadline.stop()
+        pinnedWindow.closeSaveError = "Close timed out · edits kept in memory; retry"
+        pinnedWindow.status = pinnedWindow.closeSaveError
+        pinnedEditor.runJavaScript("window.fan && fan.cancelClose()")
+    }
+    function appCloseReady(done) {
+        if (!pinnedEditor || !pinnedEditor.url || pinnedEditor.loading) { done(false); return }
+        pinnedEditor.runJavaScript("window.fan && fan.closeReady()", done)
+    }
+    function requestSafeClose() {
+        if (pinnedWindow.closeCheckPending) return
+        pinnedWindow.closeCheckPending = true
+        const attempt = ++pinnedWindow.closeAttempt
+        closeDeadline.start()
+        pinnedEditor.runJavaScript("window.fan && fan.beginClose()", function(started) {
+            if (!pinnedWindow.closeCheckPending || attempt !== pinnedWindow.closeAttempt) return
+            if (started === true) closePoll.start()
+            else { closeDeadline.stop(); pinnedWindow.closeCheckPending = false }
+        })
+    }
     onClosing: function(close) {
         close.accepted = false
-        collection.saveNow(pinnedWindow.documentId)
-        pinnedWindow.closeRequested(pinnedWindow.documentId)
+        requestSafeClose()
     }
 
     Rectangle {
@@ -89,10 +156,7 @@ Window {
             size: pinnedWindow.iconSize + 12; iconSize: pinnedWindow.iconSize
             glyph: "window-unpin"; ink: pinnedWindow.ink
             explanation: "Return this note to the fan"
-            onClicked: {
-                collection.saveNow(pinnedWindow.documentId)
-                pinnedWindow.closeRequested(pinnedWindow.documentId)
-            }
+            onClicked: pinnedWindow.requestSafeClose()
         }
 
         // The native move grab: the compositor moves the window, nothing here tracks the
@@ -106,6 +170,7 @@ Window {
 
     WebEngineView {
         id: pinnedEditor
+        enabled: pinnedWindow.editorEnabled
         objectName: "pinned-editor"
         anchors.top: header.bottom; anchors.left: parent.left
         anchors.right: parent.right; anchors.bottom: pinnedFooter.top
@@ -252,11 +317,8 @@ Window {
                     padx: settings.padX + "px", pady: settings.padY + "px",
                     tabs: String(settings.tabSpacing), icon: settings.iconSize + "px"}
         }
-        function status(text, dirty) { pinnedWindow.status = text; pinnedWindow.noteDirty = dirty }
-        function closeWindow() {
-            collection.saveNow(pinnedWindow.documentId)
-            pinnedWindow.closeRequested(pinnedWindow.documentId)
-        }
+        function status(text, dirty) { pinnedWindow.status = pinnedWindow.closeSaveError || text; pinnedWindow.noteDirty = dirty }
+        function closeWindow() { pinnedWindow.requestSafeClose() }
     }
     property WebChannel pinnedChannel: WebChannel { id: pinnedChannel; registeredObjects: [pinnedBridgeObject] }
 
@@ -266,10 +328,7 @@ Window {
     }
     Shortcut {
         sequence: "Ctrl+W"
-        onActivated: {
-            collection.saveNow(pinnedWindow.documentId)
-            pinnedWindow.closeRequested(pinnedWindow.documentId)
-        }
+        onActivated: pinnedWindow.requestSafeClose()
     }
 
     /** Live restyle: global appearance changes and this note's own colour changes must

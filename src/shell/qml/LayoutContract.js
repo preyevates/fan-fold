@@ -62,6 +62,12 @@ function fanScrollMaximum(count, pitch, tabLength, viewportHeight) {
     return Math.max(0, (count - 1) * pitch + tabLength - viewportHeight)
 }
 
+/** A downward wheel moves the upward-growing deck down to reveal farther sticks.
+ * Qt reports both angleDelta.y and pixelDelta.y negative for downward motion. */
+function fanWheelDelta(angleY, pixelY, pitch) {
+    return -(pixelY !== 0 ? pixelY : angleY / 120 * Math.max(36, pitch))
+}
+
 /** Smallest offset change that puts a requested stick wholly inside the viewport. */
 function fanOffsetForIndex(index, currentOffset, maximumOffset, baseY, pitch, tabLength,
                            viewportTop, viewportHeight) {

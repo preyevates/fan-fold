@@ -22,6 +22,8 @@
 #include <QHash>
 #include <QRegularExpression>
 #include <QApplication>
+#include "iconexport.h"
+#include <QBuffer>
 #include <QIcon>
 #include <KDBusService>
 #include <QMenu>
@@ -32,8 +34,16 @@
 #include <QStandardPaths>
 #include <QFile>
 #include <QFileInfo>
+#include <QScopeGuard>
 #include <QSystemTrayIcon>
 #include <QUrl>
+
+#ifdef Q_OS_UNIX
+#include <cerrno>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
 
 #include "appearanceadapter.h"
 #include "appearancesettings.h"
@@ -147,9 +157,32 @@ public:
 
         QDir root(m_collection->rootPath());
         const QString relativeDir = QStringLiteral("Assets/") + bucket;
-        if (!root.mkpath(relativeDir)) {
-            return fail(QStringLiteral("Could not create ") + relativeDir);
-        }
+#ifndef Q_OS_UNIX
+        // QFile/QDir path checks cannot pin a parent directory against symlink
+        // replacement before the leaf write. Until a handle-relative implementation
+        // exists on this platform, refuse rather than write outside the library.
+        return fail(QStringLiteral("Asset import requires race-safe directory handles on this platform"));
+#else
+        // Anchor operations to the opened library directory to reject symlink
+        // substitution (a canonical-path check before QFile::open would not).
+        // This does not pin the opened directory's location: a process able to
+        // rename a parent may move it outside the library during this write.
+        const int rootFd = ::open(QFile::encodeName(root.absolutePath()).constData(),
+                                  O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+        if (rootFd < 0) return fail(QStringLiteral("Could not open notes folder"));
+        const auto closeRoot = qScopeGuard([&] { ::close(rootFd); });
+        const auto openDirectory = [](int parent, const char *name) {
+            if (::mkdirat(parent, name, 0777) != 0 && errno != EEXIST) return -1;
+            return ::openat(parent, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+        };
+        const int assetsFd = openDirectory(rootFd, "Assets");
+        if (assetsFd < 0) return fail(QStringLiteral("Unsafe asset directory: Assets"));
+        const auto closeAssets = qScopeGuard([&] { ::close(assetsFd); });
+        const QByteArray bucketName = bucket.toLatin1();
+        const int bucketFd = openDirectory(assetsFd, bucketName.constData());
+        if (bucketFd < 0) return fail(QStringLiteral("Unsafe asset directory: ") + relativeDir);
+        const auto closeBucket = qScopeGuard([&] { ::close(bucketFd); });
+#endif
         // Never overwrite an existing asset: two screenshots both called Screenshot.png
         // are two different pictures, and silently replacing one would destroy a note's
         // illustration. The second becomes "Screenshot-2.png".
@@ -160,22 +193,45 @@ public:
         const QString extension = suffix.isEmpty() ? QString() : QStringLiteral(".") + suffix;
         QString relative = relativeDir + QStringLiteral("/") + base + extension;
         int attempt = 2;
-        while (QFileInfo::exists(root.filePath(relative))) {
+        for (;;) {
+#ifdef Q_OS_UNIX
+            const QByteArray name = QFile::encodeName(relative.mid(relativeDir.size() + 1));
+            const int fd = ::openat(bucketFd, name.constData(),
+                                    O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0666);
+            if (fd >= 0) {
+                const auto closeFile = qScopeGuard([&] { ::close(fd); });
+                // Remove only the inode we created. A concurrent rename/replacement
+                // must not make failure cleanup delete someone else's asset. POSIX
+                // cannot make the identity check and unlink one atomic operation.
+                auto cleanupPartial = qScopeGuard([&] {
+                    struct stat created {}, current {};
+                    if (::fstat(fd, &created) == 0
+                        && ::fstatat(bucketFd, name.constData(), &current, AT_SYMLINK_NOFOLLOW) == 0
+                        && S_ISREG(current.st_mode)
+                        && created.st_dev == current.st_dev && created.st_ino == current.st_ino) {
+                        ::unlinkat(bucketFd, name.constData(), 0);
+                    }
+                });
+                qsizetype written = 0;
+                while (written < bytes.size()) {
+                    const ssize_t count = ::write(fd, bytes.constData() + written,
+                                                  static_cast<size_t>(bytes.size() - written));
+                    if (count < 0 && errno == EINTR) continue;
+                    if (count <= 0) return fail(QStringLiteral("Could not write into ") + relativeDir);
+                    written += count;
+                }
+                cleanupPartial.dismiss();
+                break;
+            }
+            if (errno != EEXIST) return fail(QStringLiteral("Could not write into ") + relativeDir);
+#endif
             if (attempt > 9999) {
-                // Exhausting the counter must refuse, never fall through: the write below
-                // truncates whatever `relative` names, which would destroy the asset this
-                // loop exists to protect.
                 return fail(QStringLiteral("Could not find a free name in ") + relativeDir);
             }
             relative = relativeDir + QStringLiteral("/") + base + QStringLiteral("-")
                 + QString::number(attempt) + extension;
             ++attempt;
         }
-        QFile out(root.filePath(relative));
-        if (!out.open(QIODevice::WriteOnly) || out.write(bytes) != bytes.size()) {
-            return fail(QStringLiteral("Could not write into ") + relativeDir);
-        }
-        out.close();
         return {{QStringLiteral("ok"), true}, {QStringLiteral("relative"), relative},
                 {QStringLiteral("bucket"), bucket}};
     }
@@ -320,66 +376,40 @@ public:
             return {{QStringLiteral("ok"), false}, {QStringLiteral("error"), QStringLiteral("No library open")}};
         }
         if (stored.startsWith(QStringLiteral("Assets/icons/"))) {
+            if (!FanFold::safeExistingIcon(m_collection->rootPath(), stored))
+                return {{QStringLiteral("ok"), false},
+                        {QStringLiteral("error"), QStringLiteral("Unsafe icon reference")}};
             return {{QStringLiteral("ok"), true}, {QStringLiteral("relative"), stored}};
         }
         if (!stored.startsWith(QStringLiteral("theme:"))) {
             return {{QStringLiteral("ok"), false}, {QStringLiteral("error"), QStringLiteral("Unrecognised icon reference")}};
         }
         const QString name = stored.mid(6);
-        QDir icons(QDir(m_collection->rootPath()).filePath(QStringLiteral("Assets/icons")));
-        if (!icons.exists() && !icons.mkpath(QStringLiteral("."))) {
-            return {{QStringLiteral("ok"), false}, {QStringLiteral("error"), QStringLiteral("Assets/icons could not be created")}};
-        }
-        // A safe file stem from the display name; the icon's own name as fallback.
         QString stem = baseName.trimmed();
-        stem.replace(QRegularExpression(QStringLiteral("[^A-Za-z0-9 ._-]")), QString());
+        stem.replace(QRegularExpression(QStringLiteral("[^A-Za-z0-9_-]")), QString());
         if (stem.isEmpty()) stem = name;
+        stem.replace(QRegularExpression(QStringLiteral("[^A-Za-z0-9_-]")), QString());
         const QString themeFile = resolveThemeIcon(name);
-        const QString suffix = (!themeFile.isEmpty() && themeFile.endsWith(QStringLiteral(".svg")))
-            ? QStringLiteral("svg") : QStringLiteral("png");
-        QString fileName = stem + QLatin1Char('.') + suffix;
-        // Re-picking the same icon must REUSE the existing file, not mint "-2", "-3"…
-        // siblings on every pick. Same content = same file; only a genuine name
-        // collision with different content earns a numbered sibling.
-        // A bound on both loops: without one a pathological directory spins forever, and
-        // falling through with an existing name would overwrite the user's icon.
-        const int collisionLimit = 10000;
+        QByteArray bytes;
+        QString suffix = QStringLiteral("png");
         if (!themeFile.isEmpty()) {
-            for (int n = 2; icons.exists(fileName); ++n) {
-                QFile a(icons.filePath(fileName)), b(themeFile);
-                if (a.open(QIODevice::ReadOnly) && b.open(QIODevice::ReadOnly)
-                    && a.readAll() == b.readAll()) {
-                    return {{QStringLiteral("ok"), true},
-                            {QStringLiteral("relative"), QStringLiteral("Assets/icons/") + fileName}};
-                }
-                if (n > collisionLimit) {
-                    return {{QStringLiteral("ok"), false},
-                            {QStringLiteral("error"), QStringLiteral("No free name in Assets/icons")}};
-                }
-                fileName = stem + QLatin1Char('-') + QString::number(n) + QLatin1Char('.') + suffix;
-            }
-        } else {
-            for (int n = 2; icons.exists(fileName); ++n) {
-                if (n > collisionLimit) {
-                    return {{QStringLiteral("ok"), false},
-                            {QStringLiteral("error"), QStringLiteral("No free name in Assets/icons")}};
-                }
-                fileName = stem + QLatin1Char('-') + QString::number(n) + QLatin1Char('.') + suffix;
-            }
-        }
-        const QString target = icons.filePath(fileName);
-        bool written = false;
-        if (!themeFile.isEmpty()) {
-            written = QFile::copy(themeFile, target);
+            QFile source(themeFile);
+            if (source.open(QIODevice::ReadOnly)) bytes = source.readAll();
+            if (themeFile.endsWith(QStringLiteral(".svg"))) suffix = QStringLiteral("svg");
         } else {
             const QIcon icon = QIcon::fromTheme(name);
-            if (!icon.isNull()) written = icon.pixmap(128, 128).save(target, "PNG");
+            if (!icon.isNull()) {
+                QBuffer image(&bytes);
+                if (!image.open(QIODevice::WriteOnly)
+                    || !icon.pixmap(128, 128).save(&image, "PNG")) bytes.clear();
+            }
         }
-        if (!written) {
-            return {{QStringLiteral("ok"), false}, {QStringLiteral("error"), QStringLiteral("The icon could not be written")}};
+        const QString relative = FanFold::exportIconBytes(m_collection->rootPath(), stem, bytes, suffix);
+        if (relative.isEmpty()) {
+            return {{QStringLiteral("ok"), false},
+                    {QStringLiteral("error"), QStringLiteral("The icon could not be exported safely")}};
         }
-        return {{QStringLiteral("ok"), true},
-                {QStringLiteral("relative"), QStringLiteral("Assets/icons/") + fileName}};
+        return {{QStringLiteral("ok"), true}, {QStringLiteral("relative"), relative}};
     }
 
     /** Papirus when installed, otherwise the desktop's own theme. */
@@ -770,10 +800,9 @@ int main(int argc, char **argv)
     QObject::connect(&uniqueInstance, &KDBusService::activateRequested, &tray,
                      &TrayBridge::revealRequested);
 
-    // An ordinary close flushes; a forced termination still has the recovery journal.
-    QObject::connect(&application, &QCoreApplication::aboutToQuit, &collection,
-                     [&collection] { collection.flushPendingSaves(); });
-
+    // The normal close paths already flush synchronously and can veto a failed write.
+    // A shutdown callback cannot veto and would recommit an explicitly discarded note;
+    // forced termination is covered by the recovery journal instead.
     return application.exec();
 }
 

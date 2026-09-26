@@ -115,6 +115,7 @@ private:
     quint64 m_device = 0;
     quint64 m_inode = 0;
     bool m_dirty = false;
+    bool m_recoveryFailed = false;
     bool m_conflict = false;
     bool m_missing = false;
     bool m_archived = false;
@@ -239,10 +240,16 @@ public:
     Q_INVOKABLE QString createNote(const QString &relativeFolder = {});
     /** Journal a new editor buffer immediately, then restart the full quiet period. */
     Q_INVOKABLE bool updateContent(const QString &id, const QString &content);
+    /** Keep a stale editor buffer in recovery without scheduling an overwrite. */
+    bool holdConflictedContent(const QString &id, const QString &content);
     /** Save one dirty document if its on-disk revision still matches. */
     Q_INVOKABLE bool saveNow(const QString &id);
     /** Flush all non-conflicting pending saves for a normal application close. */
     Q_INVOKABLE bool flushPendingSaves();
+    /** Commit every other native buffer before explicitly discarding one selected editor. */
+    Q_INVOKABLE bool flushPendingSavesExcept(const QString &excludedId);
+    /** Explicit close choice: commit others first, then remove only selected recovery. */
+    Q_INVOKABLE bool discardSelectedAfterFlushingOthers(const QString &selectedId);
     /** The configured autosave quiet period in milliseconds. */
     Q_INVOKABLE int autosaveQuietPeriodMs() const;
     /** Milliseconds left of this note's quiet period, or -1 when no save is pending. */

@@ -12,6 +12,7 @@
 #include <QJsonDocument>
 #include <QJsonParseError>
 #include <QSaveFile>
+#include <QTemporaryFile>
 #include <QSettings>
 #include <QStandardPaths>
 #include <QStringDecoder>
@@ -27,6 +28,9 @@
 
 #ifndef RENAME_NOREPLACE
 #define RENAME_NOREPLACE (1 << 0)
+#endif
+#ifndef RENAME_EXCHANGE
+#define RENAME_EXCHANGE (1 << 1)
 #endif
 
 namespace {
@@ -89,6 +93,38 @@ bool isRegularSingleLink(const QString &path, struct stat *output = nullptr)
         *output = metadata;
     }
     return true;
+}
+
+constexpr auto displacedDirectoryName = ".fanfold-displaced";
+
+QStringList retainedInodes(const QString &root, const QString &id)
+{
+    const QDir directory(QDir(root).filePath(QLatin1String(displacedDirectoryName)));
+    struct stat metadata {};
+    const QByteArray directoryName = QFile::encodeName(directory.path());
+    if (::lstat(directoryName.constData(), &metadata) != 0 || !S_ISDIR(metadata.st_mode)) return {};
+    QStringList paths;
+    for (const QString &name : directory.entryList(QDir::AllEntries | QDir::NoDotAndDotDot)) {
+        if (name.startsWith(id + QLatin1Char('-'))) paths.append(directory.filePath(name));
+    }
+    return paths;
+}
+
+// The expected bytes are encoded in the name, not kept only in memory or in the
+// possibly cross-device XDG state directory. This works after a process restart.
+bool retainedUnchanged(const QString &path, const QString &id)
+{
+    const QString name = QFileInfo(path).fileName();
+    const QString prefix = id + QLatin1Char('-');
+    if (!name.startsWith(prefix) || name.size() != prefix.size() + 64 + 1 + 36 + 4
+        || name.at(prefix.size() + 64) != QLatin1Char('-') || !name.endsWith(QStringLiteral(".old"))
+        || !isRegularSingleLink(path)) return false;
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) return false;
+    const QByteArray bytes = file.read(maximumDocumentBytes + 1);
+    return bytes.size() <= maximumDocumentBytes
+        && QString::fromLatin1(QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex())
+               == name.mid(prefix.size(), 64);
 }
 
 bool isArchivedPath(const QString &relativePath)
@@ -310,6 +346,9 @@ bool DocumentCollection::openRoot(const QString &folder)
         reconcileNow();
         return true;
     }
+    if (m_open && !flushPendingSaves()) {
+        return false;
+    }
     adoptLibrary(std::move(pending));
     return true;
 }
@@ -363,14 +402,31 @@ bool DocumentCollection::prepareLibrary(const QString &folder, PendingLibrary *p
         const int version = parsed.isObject()
             ? parsed.object().value(QStringLiteral("version")).toInt()
             : 0;
+        // The document map carries stable IDs and paths needed to attach recovery
+        // journals. Other layout fields are optional for v1 and are migrated below.
+        // An empty map is valid for a genuinely empty library.
+        const QJsonValue documentMap = parsed.object().value(QStringLiteral("documents"));
+        bool validDocuments = documentMap.isObject();
+        if (validDocuments) {
+            const QJsonObject documents = documentMap.toObject();
+            for (auto it = documents.begin(); it != documents.end(); ++it) {
+                const QJsonValue path = it.value().toObject().value(QStringLiteral("path"));
+                if (it.key().isEmpty() || !it.value().isObject() || !path.isString()
+                    || !confinedRelative(path.toString())) {
+                    validDocuments = false;
+                    break;
+                }
+            }
+        }
         if (parseError.error != QJsonParseError::NoError || !parsed.isObject()
             || version < 1 || version > kIndexVersion
-            || parsed.object().value(QStringLiteral("root")).toString() != canonical) {
-            // A damaged index must never cost the user their Markdown, so the library
-            // still opens; it simply re-discovers everything with fresh IDs. A version
-            // from the FUTURE is refused the same way rather than reinterpreted: this
-            // build cannot know what a later schema means.
-            setError(QStringLiteral("Invalid or mismatched XDG document index; Markdown was left untouched"));
+            || parsed.object().value(QStringLiteral("root")).toString() != canonical
+            || !validDocuments) {
+            // Fresh IDs would orphan recovery records keyed by the old IDs, then
+            // overwrite the only index that can map those edits back to their notes.
+            // Keep both index and journal intact until the index is repaired.
+            setError(QStringLiteral("Invalid or mismatched XDG document index; library was not opened and Markdown was left untouched"));
+            return false;
         } else {
             // A pre-0.2.0 index carries a flat `fan`; migrate it here, where the previous
             // library is still untouched and a failure costs nothing.
@@ -385,12 +441,9 @@ bool DocumentCollection::prepareLibrary(const QString &folder, PendingLibrary *p
     return true;
 }
 
-/** Commit a validated library: flush the old one, swap, then discover. */
+/** Commit a validated library after the old one's pending saves succeeded. */
 void DocumentCollection::adoptLibrary(PendingLibrary &&pending)
 {
-    if (m_open) {
-        flushPendingSaves();
-    }
     teardownLibrary();
 
     m_rootPath = pending.rootPath;
@@ -481,7 +534,9 @@ void DocumentCollection::closeRoot()
     if (!m_open) {
         return;
     }
-    flushPendingSaves();
+    if (!flushPendingSaves()) {
+        return;
+    }
     teardownLibrary();
     emit rootChanged();
     emit openFolderChanged();
@@ -715,20 +770,45 @@ bool DocumentCollection::updateContent(const QString &id, const QString &content
         setError(QStringLiteral("Unknown, trashed, or missing document"));
         return false;
     }
-    if (document->m_content == content) {
+    if (document->m_content == content && !document->m_recoveryFailed) {
         return true;
     }
     document->m_content = content;
     document->m_dirty = true;
     if (!writeRecovery(document)) {
-        document->m_saveError = QStringLiteral("Recovery write failed; autosave stopped");
+        document->m_recoveryFailed = true;
+        document->m_saveError = QStringLiteral("Recovery write failed: latest edits exist only in memory; keep this window open and copy them before closing");
         emitDocumentChanged(document, true);
         return false;
     }
+    document->m_recoveryFailed = false;
+    document->m_saveError.clear();
     emitDocumentChanged(document, true);
     if (!document->m_conflict) {
         scheduleSave(document);
     }
+    return true;
+}
+
+bool DocumentCollection::holdConflictedContent(const QString &id, const QString &content)
+{
+    Document *document = m_documents.value(id);
+    if (!document || document->m_trashed) {
+        return false;
+    }
+    document->m_conflict = true;
+    document->m_saveError = QStringLiteral("CONFLICT: file changed externally; edits kept and autosave stopped");
+    cancelScheduledSave(id);
+    document->m_content = content;
+    document->m_dirty = true;
+    if (!writeRecovery(document)) {
+        document->m_recoveryFailed = true;
+        document->m_saveError = QStringLiteral("Recovery write failed: latest edits exist only in memory; keep this window open and copy them before closing");
+        emitDocumentChanged(document, true);
+        return false;
+    }
+    document->m_recoveryFailed = false;
+    emitDocumentChanged(document, true);
     return true;
 }
 
@@ -739,6 +819,12 @@ bool DocumentCollection::saveNow(const QString &id)
         return document != nullptr;
     }
     cancelScheduledSave(id);
+    if (document->m_recoveryFailed && !writeRecovery(document)) {
+        document->m_saveError = QStringLiteral("Recovery write failed: latest edits exist only in memory; keep this window open and copy them before closing");
+        emitDocumentChanged(document);
+        return false;
+    }
+    document->m_recoveryFailed = false;
     if (document->m_conflict || document->m_missing || document->m_trashed) {
         document->m_saveError = QStringLiteral("Save refused while the document is conflicted, missing, or trashed");
         emitDocumentChanged(document);
@@ -761,32 +847,128 @@ bool DocumentCollection::saveNow(const QString &id)
         return false;
     }
 
+    // Only ONE previous generation per note is kept on the library filesystem.
+    // Before another exchange, inspect that exact inode: a writable fd to the
+    // previous file may have modified it after the last save (including across
+    // restarts). The guarantee is bounded: an arbitrary write through an old fd
+    // after its one-generation retention window cannot be detected or preserved.
+    // Never prune a changed or ambiguous inode; stop and keep the journal instead.
+    const QStringList previous = retainedInodes(m_rootPath, id);
+    if (previous.size() > 1 || (!previous.isEmpty() && !retainedUnchanged(previous.first(), id))) {
+        document->m_conflict = true;
+        document->m_saveError = QStringLiteral("CONFLICT: previous displaced inode changed; edits and recovery retained");
+        if (!writeRecovery(document)) {
+            document->m_recoveryFailed = true;
+            document->m_saveError += QStringLiteral("; Recovery write failed: local edits may exist only in memory");
+        }
+        emitDocumentChanged(document);
+        return false;
+    }
+    QString directoryError;
+    if (!ensureDirectoryChain(m_rootPath, QLatin1String(displacedDirectoryName), &directoryError)) {
+        document->m_saveError = QStringLiteral("Cannot reserve displaced inode directory: %1").arg(directoryError);
+        emitDocumentChanged(document);
+        return false;
+    }
+    // The backup directory itself must survive a crash before we exchange a
+    // live inode into it. Refuse the save while the journal still holds edits.
+    const QByteArray rootName = QFile::encodeName(m_rootPath);
+    const int rootFd = ::open(rootName.constData(), O_RDONLY | O_DIRECTORY);
+    const bool directoryDurable = rootFd >= 0 && ::fsync(rootFd) == 0;
+    if (rootFd >= 0) ::close(rootFd);
+    if (!directoryDurable) {
+        document->m_saveError = QStringLiteral("Cannot sync displaced inode directory; edits retained in recovery");
+        emitDocumentChanged(document);
+        return false;
+    }
     const QByteArray output = document->m_content.toUtf8();
     if (output.size() > maximumDocumentBytes) {
         document->m_saveError = QStringLiteral("Save exceeds the 8 MiB document limit");
         emitDocumentChanged(document);
         return false;
     }
-    QSaveFile replacement(document->m_absolutePath);
-    replacement.setDirectWriteFallback(false);
-    if (!replacement.open(QIODevice::WriteOnly) || replacement.write(output) != output.size()) {
-        replacement.cancelWriting();
-        document->m_saveError = QStringLiteral("Atomic autosave write failed: %1").arg(replacement.errorString());
+    // QSaveFile's final rename unconditionally replaces the destination. Between its
+    // last read and commit an external editor can atomically publish a new revision.
+    // Exchange the two names instead: the displaced inode remains available for a
+    // post-swap comparison, so a racing external revision is never silently discarded.
+    QTemporaryFile replacement(document->m_absolutePath + QStringLiteral(".fanfold-save-XXXXXX"));
+    if (!replacement.open() || replacement.write(output) != output.size()
+        || !replacement.flush() || ::fsync(replacement.handle()) != 0) {
+        document->m_saveError = QStringLiteral("Atomic autosave staging failed: %1").arg(replacement.errorString());
         emitDocumentChanged(document);
         return false;
     }
-
+    replacement.setPermissions(current.permissions());
+    const QString stagedPath = replacement.fileName();
     QFile finalCheck(document->m_absolutePath);
-    if (!finalCheck.open(QIODevice::ReadOnly) || digest(finalCheck.read(maximumDocumentBytes + 1)) != document->m_revision) {
-        replacement.cancelWriting();
+    if (!finalCheck.open(QIODevice::ReadOnly)
+        || digest(finalCheck.read(maximumDocumentBytes + 1)) != document->m_revision
+        || !isRegularSingleLink(document->m_absolutePath)) {
         document->m_conflict = true;
         document->m_saveError = QStringLiteral("CONFLICT: disk revision changed during autosave; edits kept");
         emitDocumentChanged(document);
         return false;
     }
     finalCheck.close();
-    if (!replacement.commit()) {
-        document->m_saveError = QStringLiteral("Atomic autosave commit failed: %1").arg(replacement.errorString());
+    const QByteArray stagedName = QFile::encodeName(stagedPath);
+    const QByteArray destinationName = QFile::encodeName(document->m_absolutePath);
+    if (::syscall(SYS_renameat2, AT_FDCWD, stagedName.constData(), AT_FDCWD,
+                  destinationName.constData(), RENAME_EXCHANGE) != 0) {
+        document->m_saveError = QStringLiteral("Atomic autosave exchange failed: %1")
+                                    .arg(QString::fromLocal8Bit(std::strerror(errno)));
+        emitDocumentChanged(document);
+        return false;
+    }
+    // The old destination is now at stagedPath, even if it changed in the last
+    // instruction before the exchange. Read that exact displaced inode, not a
+    // fresh path lookup of the just-written file.
+    QFile displaced(stagedPath);
+    const bool unchanged = displaced.open(QIODevice::ReadOnly)
+        && digest(displaced.read(maximumDocumentBytes + 1)) == document->m_revision
+        && isRegularSingleLink(stagedPath);
+    displaced.close();
+    // The old inode must stay on THIS filesystem. XDG AppData may be on a
+    // different device; EXDEV after the exchange would falsely flag every save.
+    // Do not replace an existing backup, and never let QTemporaryFile unlink a
+    // displaced inode after the exchange, even if a later operation fails.
+    replacement.setAutoRemove(false);
+    const QString backup = QDir(m_rootPath).filePath(
+        QLatin1String(displacedDirectoryName) + QLatin1Char('/') + id + QLatin1Char('-')
+        + document->m_revision + QLatin1Char('-')
+        + QUuid::createUuid().toString(QUuid::WithoutBraces) + QStringLiteral(".old"));
+    const QByteArray backupName = QFile::encodeName(backup);
+    const bool backedUp = isRegularSingleLink(stagedPath)
+        && ::syscall(SYS_renameat2, AT_FDCWD, stagedName.constData(), AT_FDCWD,
+                     backupName.constData(), RENAME_NOREPLACE) == 0;
+    const QString retained = backedUp ? backup : stagedPath;
+    // Persist both directory entries before retiring recovery. A failure leaves
+    // the journal and both inodes available for manual repair.
+    const QByteArray backupDirectory = QFile::encodeName(QFileInfo(backup).path());
+    const QByteArray liveDirectory = QFile::encodeName(QFileInfo(document->m_absolutePath).path());
+    const int backupFd = ::open(backupDirectory.constData(), O_RDONLY | O_DIRECTORY);
+    const int liveFd = ::open(liveDirectory.constData(), O_RDONLY | O_DIRECTORY);
+    const bool durable = backupFd >= 0 && liveFd >= 0
+        && ::fsync(backupFd) == 0 && ::fsync(liveFd) == 0;
+    if (backupFd >= 0) ::close(backupFd);
+    if (liveFd >= 0) ::close(liveFd);
+    if (!unchanged || !backedUp || !durable
+        || (!previous.isEmpty() && !retainedUnchanged(previous.first(), id))) {
+        document->m_conflict = true;
+        document->m_saveError = QStringLiteral("CONFLICT: displaced inode retained at %1; inspect it for external writes")
+                                    .arg(retained);
+        if (!writeRecovery(document)) {
+            document->m_recoveryFailed = true;
+            document->m_saveError += QStringLiteral("; Recovery write failed: local edits may exist only in memory");
+        }
+        emitDocumentChanged(document);
+        return false;
+    }
+    // The previous generation is now outside the promised retention window.
+    // Verify again just before pruning. A concurrent write *after* that final
+    // check cannot be guaranteed; users must not rely on arbitrary-late writes.
+    if (!previous.isEmpty() && !QFile::remove(previous.first())) {
+        document->m_conflict = true;
+        document->m_saveError = QStringLiteral("CONFLICT: previous inode could not be retired; recovery retained");
         emitDocumentChanged(document);
         return false;
     }
@@ -806,15 +988,48 @@ bool DocumentCollection::saveNow(const QString &id)
 
 bool DocumentCollection::flushPendingSaves()
 {
+    return flushPendingSavesExcept(QString());
+}
+
+bool DocumentCollection::flushPendingSavesExcept(const QString &excludedId)
+{
     bool success = true;
+    QString failure;
     const QStringList ids = m_catalog;
     for (const QString &id : ids) {
+        if (id == excludedId) {
+            continue;
+        }
         Document *document = m_documents.value(id);
         if (document && document->m_dirty && !saveNow(id)) {
             success = false;
+            if (failure.isEmpty()) {
+                failure = document->m_saveError.isEmpty()
+                    ? QStringLiteral("Unable to commit pending Markdown") : document->m_saveError;
+            }
         }
     }
+    setError(failure);
     return success;
+}
+
+bool DocumentCollection::discardSelectedAfterFlushingOthers(const QString &selectedId)
+{
+    Document *selected = m_documents.value(selectedId);
+    if (!selected || selected->m_trashed || selected->m_missing) {
+        setError(QStringLiteral("Discard refused: selected document unavailable"));
+        return false;
+    }
+    if (!flushPendingSavesExcept(selectedId)) return false;
+    const QString recovery = recoveryPath(selectedId);
+    if (QFile::exists(recovery) && !QFile::remove(recovery)) {
+        setError(QStringLiteral("Discard refused: unable to remove selected recovery"));
+        return false;
+    }
+    cancelScheduledSave(selectedId);
+    selected->m_dirty = false;
+    selected->m_recoveryFailed = false;
+    return true;
 }
 
 bool DocumentCollection::renameDocument(const QString &id, const QString &title)
@@ -896,6 +1111,11 @@ bool DocumentCollection::moveToTrash(const QString &id)
     document->m_trashed = true;
     document->m_missing = false;
     document->m_absolutePath.clear();
+    // A trashed note has no next autosave. Remove only a verified unchanged
+    // previous generation; changed evidence is never destroyed by cleanup.
+    for (const QString &path : retainedInodes(m_rootPath, id)) {
+        if (retainedUnchanged(path, id)) QFile::remove(path);
+    }
     document->m_saveError = pathInTrash.isEmpty()
         ? QStringLiteral("Moved to desktop Trash, but this platform did not expose a restorable path")
         : QString();
@@ -1061,9 +1281,9 @@ bool DocumentCollection::setFanOrder(const QStringList &ids)
         setError(QStringLiteral("Fan order must be a permutation of the open folder's fan"));
         return false;
     }
-    if (next == m_fan) {
-        return true;
-    }
+    // An explicit no-op drag must still establish a stored order. In particular a
+    // newly discovered external note can make the path-based fan equal to the drag.
+    const bool orderChanged = next != m_fan;
     m_fan = next;
 
     // Persisted per-folder order keeps the ids it already held that are NOT on the fan
@@ -1078,7 +1298,7 @@ bool DocumentCollection::setFanOrder(const QStringList &ids)
     m_folderOrder.insert(m_openFolder, stored);
     markMetadataDirty();
     const bool ok = persistMetadata();
-    emit fanChanged();
+    if (orderChanged) emit fanChanged();
     return ok;
 }
 
@@ -1366,7 +1586,8 @@ QList<DocumentCollection::DiskEntry> DocumentCollection::scan(QStringList *warni
             continue;
         }
         const QString relative = QDir(m_rootPath).relativeFilePath(absolute);
-        if (!confinedRelative(relative) || !relative.endsWith(QStringLiteral(".md"), Qt::CaseInsensitive)) {
+        if (relative.startsWith(QLatin1String(displacedDirectoryName) + QLatin1Char('/'))
+            || !confinedRelative(relative) || !relative.endsWith(QStringLiteral(".md"), Qt::CaseInsensitive)) {
             continue;
         }
         struct stat metadata {};
@@ -1810,6 +2031,7 @@ bool DocumentCollection::writeRecovery(Document *document)
     const QJsonObject object{{QStringLiteral("version"), 1}, {QStringLiteral("id"), document->m_id},
                              {QStringLiteral("path"), document->m_relativePath},
                              {QStringLiteral("baseRevision"), document->m_revision},
+                             {QStringLiteral("conflict"), document->m_conflict},
                              {QStringLiteral("content"), document->m_content},
                              {QStringLiteral("updated"), QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs)}};
     const QByteArray bytes = QJsonDocument(object).toJson();
@@ -1840,13 +2062,15 @@ void DocumentCollection::applyRecovery(Document *document)
     }
     const QString recovered = object.value(QStringLiteral("content")).toString();
     const QString baseRevision = object.value(QStringLiteral("baseRevision")).toString();
-    if (recovered == document->m_content) {
+    const bool recoveredConflict = object.value(QStringLiteral("conflict")).toBool();
+    if (recovered == document->m_content && !recoveredConflict) {
         clearRecovery(document->m_id);
         return;
     }
     document->m_content = recovered;
     document->m_dirty = true;
-    if (baseRevision != document->m_revision || document->m_missing || document->m_trashed) {
+    if (recoveredConflict
+        || baseRevision != document->m_revision || document->m_missing || document->m_trashed) {
         document->m_conflict = true;
         document->m_saveError = QStringLiteral("CONFLICT: recovered edits are based on another disk revision; edits kept");
     } else {

@@ -6,10 +6,39 @@
 #include "searchmodel.h"
 
 #include <QDir>
+#include <QFile>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QSet>
 #include <QSettings>
+#include <QSignalBlocker>
 #include <QUrl>
 
 #include <algorithm>
+
+namespace {
+// The engine persists a drag as folderOrder in its index. An untouched folder has
+// no entry; its engine fan order is path order, which is not necessarily title order.
+QStringList storedDragOrder(const DocumentCollection *collection)
+{
+    QFile file(collection->metadataPath());
+    if (!file.open(QIODevice::ReadOnly)) {
+        return {};
+    }
+    const QJsonDocument index = QJsonDocument::fromJson(file.readAll());
+    const QJsonArray stored = index.object().value(QStringLiteral("folderOrder"))
+                                  .toObject().value(collection->openFolder()).toArray();
+    QStringList ids;
+    for (const QJsonValue &value : stored) {
+        if (value.isString()) {
+            ids.append(value.toString());
+        }
+    }
+    return ids;
+}
+
+} // namespace
 
 NotesAdapter::NotesAdapter(DocumentCollection *collection, QObject *parent)
     : QObject(parent)
@@ -162,6 +191,11 @@ QVariantMap NotesAdapter::colourOf(const QString &id) const
 
 QVariantMap NotesAdapter::load()
 {
+    return loadWithOrder(nullptr);
+}
+
+QVariantMap NotesAdapter::loadWithOrder(const QStringList *requestedOrder)
+{
     QVariantMap files;
     QVariantMap titles;
     QVariantMap icons;
@@ -186,6 +220,40 @@ QVariantMap NotesAdapter::load()
 
     if (m_collection) {
         ids = visibleFanIds();
+        if (requestedOrder) {
+            ids = *requestedOrder;
+        } else if (!searchActive()) {
+            // Index zero is the BOTTOM stick. Reverse the array so the visible
+            // top-to-bottom labels read A to Z without rewriting stored drag order.
+            const auto byTitle = [this](const QString &left, const QString &right) {
+                const Document *a = m_collection->document(left);
+                const Document *b = m_collection->document(right);
+                const QString aTitle = a ? a->title() : QString();
+                const QString bTitle = b ? b->title() : QString();
+                const int folded = QString::compare(aTitle, bTitle, Qt::CaseInsensitive);
+                if (folded != 0) {
+                    return folded > 0;
+                }
+                const int exact = QString::compare(aTitle, bTitle, Qt::CaseSensitive);
+                return exact != 0 ? exact > 0 : left > right;
+            };
+            const QStringList saved = storedDragOrder(m_collection);
+            if (saved.isEmpty()) {
+                std::sort(ids.begin(), ids.end(), byTitle);
+            } else {
+                // Existing dragged notes retain their stored relative order, including
+                // absent/pinned ids' slots. New discoveries are not in the persisted
+                // order: sort only those, and append them after the manual sequence.
+                const QSet<QString> savedIds(saved.cbegin(), saved.cend());
+                QStringList additions;
+                QStringList manuallyOrdered;
+                for (const QString &id : std::as_const(ids)) {
+                    (savedIds.contains(id) ? manuallyOrdered : additions).append(id);
+                }
+                std::sort(additions.begin(), additions.end(), byTitle);
+                ids = manuallyOrdered + additions;
+            }
+        }
         for (const QString &id : std::as_const(ids)) {
             const Document *document = m_collection->document(id);
             if (!document) {
@@ -247,9 +315,8 @@ QVariantMap NotesAdapter::load()
             {QStringLiteral("palettes"), Palette::paletteChoices()},
             {QStringLiteral("activePalette"), active},
             {QStringLiteral("paletteLabel"), active.value(QStringLiteral("label"))},
-            // The fan IS the order, so `order` and `ids` are the same list.
-            // Presentation reads `order` for the deck and `ids` for selection, and they
-            // must stay consistent.
+            // Keep both arrays in the same presentation order: the deck reads `order`,
+            // while selection indexes into `ids`.
             {QStringLiteral("order"), QVariant(ids)},
             // How many notes the LIBRARY holds, which is NOT the size of the fan.
             //
@@ -372,11 +439,14 @@ QVariantMap NotesAdapter::setOrder(const QStringList &ids)
     if (sorted != expected) {
         return failure(QStringLiteral("Order must list every fanned note exactly once"));
     }
+    // setFanOrder persists an explicit drag even if the path-based fan already
+    // matches it (including after external notes join the folder).
     if (!m_collection->setFanOrder(ids)) {
         return failure(QStringLiteral("Order not saved; the library index is unwritable"));
     }
     emit changed();
-    return load();
+    // The drag's immediate response keeps the user's chosen order.
+    return loadWithOrder(&ids);
 }
 
 QVariantMap NotesAdapter::openFolder(const QString &folder)
@@ -386,7 +456,9 @@ QVariantMap NotesAdapter::openFolder(const QString &folder)
     }
     // Flush first. Scoping away from a folder takes the open card's note off the fan, and
     // an unsaved buffer whose card is about to be replaced is how edits go missing.
-    m_collection->flushPendingSaves();
+    if (!m_collection->flushPendingSaves()) {
+        return failure(m_collection->lastError());
+    }
     if (!m_collection->setOpenFolder(folder)) {
         const QString refusal = m_collection->lastError();
         return failure(refusal.isEmpty() ? QStringLiteral("That folder cannot be opened")

@@ -110,10 +110,18 @@ install(FILES
 
 install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/../fanfold/packaging/io.github.preyevates.FanFold.desktop
         DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
+# AppStream metadata, so Discover lists the installed app with its description and icon.
+install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/../fanfold/packaging/io.github.preyevates.FanFold.metainfo.xml
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/metainfo)
 install(FILES
         ${CMAKE_CURRENT_SOURCE_DIR}/../fanfold/packaging/io.github.preyevates.FanFold.svg
         ${CMAKE_CURRENT_SOURCE_DIR}/../fanfold/packaging/io.github.preyevates.FanFold-symbolic.svg
         DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps)
+foreach(FANFOLD_ICON_SIZE 128 256)
+    install(FILES
+            ${CMAKE_CURRENT_SOURCE_DIR}/../fanfold/packaging/icons/${FANFOLD_ICON_SIZE}x${FANFOLD_ICON_SIZE}/apps/io.github.preyevates.FanFold.png
+            DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/${FANFOLD_ICON_SIZE}x${FANFOLD_ICON_SIZE}/apps)
+endforeach()
 install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/../../LICENSE
         DESTINATION ${CMAKE_INSTALL_DATADIR}/doc/fanfold)
 install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/../fanfold/packaging/THIRD_PARTY_NOTICES.md

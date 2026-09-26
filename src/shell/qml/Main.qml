@@ -208,6 +208,7 @@ PlasmaCore.Dialog {
                                            ? manifest.folderCount : dialog.order.length) === 0
     property bool closeRequested: false
     property bool allowDiscard: false
+    property string closeSaveError: ""
     property bool paletteOpen: false
     // Which surface the single compact panel is assigning: "paper" or "ink".
     property string paletteMode: "paper"
@@ -548,9 +549,9 @@ PlasmaCore.Dialog {
      *  is opened to keep the panel on screen for the next row the user reaches for. */
     function scopeToFolderKeepingLibrary(folder) {
         var wasOpen = dialog.expanded
-        if(!dialog.scopeToFolder(folder)) return false
-        if(wasOpen && !dialog.expanded && dialog.order.length > 0) dialog.openNote(0)
-        return true
+        dialog.scopeToFolder(folder, function(ok) {
+            if(ok && wasOpen && !dialog.expanded && dialog.order.length > 0) dialog.openNote(0)
+        })
     }
     /** Point the fan at `folder` (root-relative; "" is the library root).
      *
@@ -558,21 +559,47 @@ PlasmaCore.Dialog {
      *  Library, creating a note and restoring one all route through here, so none of them
      *  can drift into a different idea of what the fan is showing.
      *
-     *  The open card is collapsed first: it is showing a note from the folder being left,
-     *  and leaving it open would paint a card whose tab is no longer on the edge.
-     *  @return true when the scope moved (or was already there). */
-    function scopeToFolder(folder) {
+     *  The open card is collapsed after editors acknowledge and the native scope succeeds;
+     *  on refusal the current card and library view remain unchanged.
+     *  @return true when navigation started (completion is reported via done). */
+    // One navigation at a time: a second gesture must not cancel an in-flight editor gate.
+    property bool navigationPending: false
+    // Suppress synchronous native manifest notifications until old WebEngines are retired.
+    property bool rootSwitchCommitting: false
+    function scopeToFolder(folder, done) {
+        if (dialog.navigationPending) return false
         var wanted = folder === undefined || folder === null ? "" : String(folder)
-        if(dialog.searchActive) dialog.clearSearch()
-        if(wanted === dialog.openFolder) return true
-        var result = notesStore.openFolder(wanted)
-        if(!result || !result.ok) {
-            dialog.saveStatus = "Folder refused · " + (result && result.error ? result.error : "unknown")
-            return false
+        if (!dialog.searchActive && wanted === dialog.openFolder) {
+            if (done) done(true)
+            return true
         }
-        dialog.collapse()
-        applyManifest(result)
-        dialog.selected = 0
+        dialog.navigationPending = true
+        dialog.checkEditorsForClose(null, function(ready, release) {
+            var ok = false
+            try {
+                if (!ready) {
+                    dialog.saveStatus = "Folder refused · editor push pending; retry after it finishes"
+                    return
+                }
+                // The adapter must refuse a failed native flush before changing the projection.
+                var result = notesStore.openFolder(wanted)
+                if (!result || !result.ok) {
+                    dialog.saveStatus = "Folder refused · " + (result && result.error ? result.error : "unknown")
+                    return
+                }
+                if (dialog.searchActive) dialog.clearSearch()
+                dialog.collapse()
+                applyManifest(result)
+                dialog.selected = 0
+                ok = true
+            } catch (e) {
+                dialog.saveStatus = "Folder refused · " + e
+            } finally {
+                release()
+                dialog.navigationPending = false
+                if (done) done(ok)
+            }
+        })
         return true
     }
     /** Create a note, put it on the fan, and open it. THE creation path — the fan's "+",
@@ -605,11 +632,138 @@ PlasmaCore.Dialog {
         surface.forceActiveFocus()
         alignment.restart()
     }
-    function requestClose() {
-        if(!dialog.dirty) Qt.quit()
-        else { dialog.closeRequested=true; dialog.openNote(dialog.selected) }
+    property var closeGateAbort: null
+    property bool pinHandoffPending: false
+    property var closeGateRetry: null
+    property Timer closeGateRetryTimer: Timer {
+        interval: 30
+        repeat: false
+        onTriggered: if (dialog.closeGateRetry) dialog.closeGateRetry()
     }
-    onClosing: function(close) { if(dialog.dirty && !dialog.allowDiscard) { close.accepted=false; dialog.requestClose() } }
+    property Timer closeGateTimer: Timer {
+        interval: 5000
+        repeat: false
+        onTriggered: if (dialog.closeGateAbort) dialog.closeGateAbort()
+    }
+    function checkEditorsForClose(excludedId, done) {
+        // Freeze every live editor before the async WebEngine callbacks: a keystroke
+        // between acknowledgment and the native flush must not slip past the gate.
+        if (dialog.closeGateAbort) dialog.closeGateAbort()
+        var deck = loader.item
+        var windows = []
+        if (deck) deck.enabled = false
+        for (var i = 0; i < pinnedWindows.count; ++i) {
+            var window = pinnedWindows.objectAt(i)
+            if (window) { window.editorEnabled = false; windows.push(window) }
+            else windows.push(null)
+        }
+        var finished = false
+        function release() {
+            try { if (deck) deck.enabled = true } catch (e) { /* destroyed deck */ }
+            for (var i = 0; i < windows.length; ++i) {
+                try { if (windows[i]) windows[i].editorEnabled = true }
+                catch (e) { /* destroyed window */ }
+            }
+        }
+        function intact() {
+            try {
+                if (pinnedWindows.count !== windows.length) return false
+                for (var i = 0; i < windows.length; ++i)
+                    if (!windows[i] || pinnedWindows.objectAt(i) !== windows[i]) return false
+                return true
+            } catch (e) { return false }
+        }
+        function finish(ready) {
+            if (finished) return
+            finished = true
+            dialog.closeGateTimer.stop()
+            if (dialog.pinHandoffPending) {
+                dialog.closeGateRetryTimer.stop()
+                dialog.closeGateRetry = null
+            }
+            dialog.closeGateAbort = null
+            if (!ready) release()
+            done(ready, release)
+        }
+        dialog.closeGateAbort = function() { finish(false) }
+        dialog.closeGateTimer.start()
+        function checkPinned(index) {
+            if (finished) return
+            if (!intact()) { finish(false); return }
+            if (index >= windows.length) { finish(true); return }
+            var window = windows[index]
+            try {
+                window.appCloseReady(function(ready) {
+                    if (finished) return
+                    if (!intact() || ready !== true) { finish(false); return }
+                    checkPinned(index + 1)
+                })
+            } catch (e) { finish(false) }
+        }
+        if (deck) {
+            function checkDeck() {
+                if (finished) return
+                try {
+                    deck.runJavaScript("window.fan && fan.closeReady(" + JSON.stringify(excludedId) + ")", function(ready) {
+                        if (finished) return
+                        if (ready !== true) {
+                            if (dialog.pinHandoffPending && intact()) {
+                                // The pin transition waits for every bridge push (including
+                                // reordered acks); closeReady repairs a stale native buffer.
+                                dialog.closeGateRetry = checkDeck
+                                dialog.closeGateRetryTimer.start()
+                            } else finish(false)
+                            return
+                        }
+                        checkPinned(0)
+                    })
+                } catch (e) { finish(false) }
+            }
+            checkDeck()
+        } else checkPinned(0)
+    }
+    function requestDiscardClose() {
+        if (dialog.navigationPending) return
+        var selectedId = dialog.ids[dialog.selected] || ""
+        dialog.checkEditorsForClose(selectedId, function(ready, release) {
+            if (!ready) {
+                dialog.closeSaveError = "Close refused · editor push pending; retry after it finishes"
+                dialog.saveStatus = dialog.closeSaveError
+                return
+            }
+            if(!collection.discardSelectedAfterFlushingOthers(selectedId)) {
+                release()
+                dialog.closeSaveError = "Close refused · " + collection.lastError
+                dialog.saveStatus = dialog.closeSaveError
+                return
+            }
+            dialog.closeSaveError = ""
+            dialog.allowDiscard = true
+            Qt.quit()
+        })
+    }
+    function requestClose() {
+        if (dialog.navigationPending) return
+        if(dialog.dirty) { dialog.closeRequested=true; dialog.openNote(dialog.selected); return }
+        dialog.checkEditorsForClose(null, function(ready, release) {
+            if (!ready) {
+                dialog.closeSaveError = "Close refused · editor push pending; retry after it finishes"
+                dialog.saveStatus = dialog.closeSaveError
+                dialog.openNote(dialog.selected, false)
+                return
+            }
+            if(!collection.flushPendingSaves()) {
+                release()
+                dialog.closeSaveError = "Close refused · " + collection.lastError
+                dialog.saveStatus = dialog.closeSaveError
+                dialog.openNote(dialog.selected, false)
+                return
+            }
+            dialog.closeSaveError = ""
+            Qt.quit()
+        })
+    }
+    onClosing: function(close) { if(!dialog.allowDiscard) { close.accepted=false; dialog.requestClose() } }
     onActiveChanged: if(!active && expanded && !closePrompt.visible) collapse()
 
     // ---- Screen rectangles ---------------------------------------------------------
@@ -749,8 +903,7 @@ PlasmaCore.Dialog {
         dialog.fanScrollOffset, dialog.fanScrollMaximum)
     function scrollFanBy(angleY, pixelY) {
         if(dialog.fanScrollMaximum <= 0) return
-        var delta = pixelY !== 0 ? pixelY
-                                : angleY/120*Math.max(36, dialog.fanSpreadPitch)
+        var delta = LayoutContract.fanWheelDelta(angleY, pixelY, dialog.fanSpreadPitch)
         dialog.fanScrollOffset = Math.max(0, Math.min(dialog.fanScrollMaximum,
                                                        dialog.fanScrollOffset + delta))
         dialog.fanScrollActive = true
@@ -999,11 +1152,13 @@ PlasmaCore.Dialog {
         // The note went back to the folder it came from, which may not be the open one.
         // Follow it: a restore that leaves the note invisible reads as a failed restore.
         var document = collection.documentObject(id)
-        dialog.scopeToFolder(document ? document.folder : "")
-        applyManifest(notesStore.load())
-        dialog.libraryOpen = false
-        var at = dialog.order.indexOf(id)
-        if(at >= 0) openNote(at)
+        dialog.scopeToFolder(document ? document.folder : "", function(ok) {
+            if (!ok) return
+            applyManifest(notesStore.load())
+            dialog.libraryOpen = false
+            var at = dialog.order.indexOf(id)
+            if(at >= 0) openNote(at)
+        })
     }
     /** Open an archived-or-fanned note from the Library. An archived note is NOT restored on
      *  the first press: restoring moves the file, so it arms like Archive and Trash. An
@@ -1019,27 +1174,49 @@ PlasmaCore.Dialog {
         // Opening a note from the Library scopes the fan to ITS folder — the same gesture
         // as opening that folder. Nothing "joins": membership is derived from the scope.
         var target = collection.documentObject(id)
-        dialog.scopeToFolder(target ? target.folder : "")
-        applyManifest(notesStore.load())
-        dialog.libraryOpen = false
-        var at = dialog.order.indexOf(id)
-        if(at >= 0) openNote(at)
+        dialog.scopeToFolder(target ? target.folder : "", function(ok) {
+            if (!ok) return
+            applyManifest(notesStore.load())
+            dialog.libraryOpen = false
+            var at = dialog.order.indexOf(id)
+            if(at >= 0) openNote(at)
+        })
     }
     /** Pin the selected note into its own ordinary window, or close that window again. A
      *  pinned note LEAVES the fan while its window is open, so the same note is never
      *  presented twice; closing the window returns it. Nothing is deleted either way. */
     function togglePinSelected() {
+        if (dialog.navigationPending) return
         var id = dialog.selectedId
         if(!id) return
         var document = collection.documentObject(id)
         if(!document) return
         if(document.pinned) { unpinNote(id); return }
-        collection.saveNow(id)
-        if(!collection.setPinned(id, true)) { dialog.saveStatus = "Pin refused · " + collection.lastError; return }
-        // No leaveFan: pinned is one of the three exclusions the derivation applies, so
-        // setting the pin is what takes the tab off the edge.
-        dialog.pinnedIds = dialog.pinnedIds.concat([id])
-        reselectAfterFiling(id)
+        dialog.navigationPending = true
+        dialog.pinHandoffPending = true
+        dialog.checkEditorsForClose(null, function(ready, release) {
+            try {
+                if (!ready || dialog.selectedId !== id) {
+                    dialog.saveStatus = "Pin refused · editor push pending or failed; retry after it finishes"
+                    return
+                }
+                if (!collection.saveNow(id)) {
+                    dialog.saveStatus = "Pin refused · Unable to save this note; retry"
+                    return
+                }
+                if(!collection.setPinned(id, true)) {
+                    dialog.saveStatus = "Pin refused · " + collection.lastError
+                    return
+                }
+                // Pinning removes the tab; only register the window after the native save.
+                dialog.pinnedIds = dialog.pinnedIds.concat([id])
+                reselectAfterFiling(id)
+            } finally {
+                release()
+                dialog.pinHandoffPending = false
+                dialog.navigationPending = false
+            }
+        })
     }
     function unpinNote(id) {
         // Clearing the pin is enough — the note returns to the fan whenever its folder is
@@ -1064,7 +1241,9 @@ PlasmaCore.Dialog {
                 restored.push(catalog[i])
             }
         }
-        if(restored.length) { dialog.pinnedIds = restored; applyManifest(notesStore.load()) }
+        // Always replace the window register, including the empty set. The native root
+        // can change while old windows are open; their IDs must never survive into it.
+        dialog.pinnedIds = restored
     }
 
     property Timer alignmentTimer: Timer {
@@ -2015,7 +2194,7 @@ PlasmaCore.Dialog {
                     anchors.fill: parent; anchors.margins: -4
                     hoverEnabled: true
                     cursorShape: Qt.PointingHandCursor
-                    onClicked: { dialog.scopeToFolder(""); dialog.libraryOpen = false }
+                    onClicked: dialog.scopeToFolder("", function(ok) { if (ok) dialog.libraryOpen = false })
                 }
             }
             Text {
@@ -2326,6 +2505,16 @@ PlasmaCore.Dialog {
             height: dialog.fanDeckViewportHeight
             clip: true
             z: 100
+            // The viewport, not a moving stick, owns wheel input. A fast sequence can
+            // move the first hit target out from under a stationary pointer; empty
+            // spaces between sticks must scroll just as reliably as the labels.
+            WheelHandler {
+                target: null
+                onWheel: function(event) {
+                    dialog.scrollFanBy(event.angleDelta.y, event.pixelDelta.y)
+                    event.accepted = true
+                }
+            }
             // A passive handler observes the viewport independently of whichever shingled
             // MouseArea owns the wheel event. When scrolling moves that stick away without
             // moving the physical pointer, the deck must not mistake the synthetic exit for
@@ -2546,10 +2735,7 @@ PlasmaCore.Dialog {
                     // erase the highlight the new stick has already claimed.
                     onEntered: dialog.hoveredNoteId = tab.noteId
                     onExited: if(dialog.hoveredNoteId===tab.noteId) dialog.hoveredNoteId = ""
-                    onWheel: function(wheel) {
-                        dialog.scrollFanBy(wheel.angleDelta.y, wheel.pixelDelta.y)
-                        wheel.accepted = true
-                    }
+
                     Accessible.role: Accessible.Button
                     Accessible.name: tab.accessibleName
                 }
@@ -2740,9 +2926,7 @@ PlasmaCore.Dialog {
         // flees the cursor: the fan spreads DOWNWARD on hover, so approaching the button
         // spreads the deck over it. Above the top stick nothing covers it.
         //
-        // The + is two strokes painted directly in ink rather than a themed icon:
-        // Kirigami.Icon's isMask recolour silently fails on this control and renders the
-        // theme's own grey, washing the glyph out against the note's paper.
+        // Creation uses the theme's project-add icon, in the same QuietButton as search.
         QuietButton {
             objectName: "fan-new-note"
             x: surface.width - dialog.fanTabWidth
@@ -2756,16 +2940,11 @@ PlasmaCore.Dialog {
             // air before the glyph, so a 10 px margin renders as 17.
             y: dialog.fanBaseY + dialog.fanTabLength + 6 - dialog.fanVisibleTop
             visible: dialog.order.length > 0 && !dialog.fanHiddenIdle
-            // iconSize 0: with no glyph, QuietButton's contentItem otherwise paints its
-            // empty-swatch circle and the + reads as ⊕.
-            size: 30; iconSize: 0
+            size: 30; iconSize: 16
+            glyph: "project_add-symbolic"
             ink: dialog.libraryIsEmpty ? dialog.neutralText : dialog.ink
             explanation: "New note · Ctrl+N"
             z: 60
-            Rectangle { anchors.centerIn: parent; width: 14; height: 2; radius: 1
-                        color: dialog.libraryIsEmpty ? dialog.neutralText : dialog.ink }
-            Rectangle { anchors.centerIn: parent; width: 2; height: 14; radius: 1
-                        color: dialog.libraryIsEmpty ? dialog.neutralText : dialog.ink }
             onClicked: dialog.createNoteOnFan(true)
         }
         // Whole-library search lives at the far end of the deck, opposite creation. Its
@@ -2776,23 +2955,11 @@ PlasmaCore.Dialog {
                + Math.round((dialog.fanTabWidth - dialog.fanSearchSize)/2)
             y: dialog.fanSearchTop - dialog.fanVisibleTop
             visible: !dialog.libraryIsEmpty && !dialog.libraryOpen && !dialog.fanHiddenIdle
-            size: dialog.fanSearchSize; iconSize: 0
+            size: dialog.fanSearchSize; iconSize: 16
+            glyph: "file-search-symbolic"
             ink: dialog.ink
             explanation: "Search notes · Ctrl+F"
             z: 60
-            Item {
-                anchors.centerIn: parent
-                width: 16; height: 16
-                Rectangle {
-                    x: 1; y: 1; width: 9; height: 9; radius: 5
-                    color: "transparent"; border.width: 2; border.color: dialog.ink
-                }
-                Rectangle {
-                    x: 9; y: 10; width: 7; height: 2; radius: 1
-                    rotation: 45; transformOrigin: Item.Left
-                    color: dialog.ink
-                }
-            }
             onClicked: dialog.showSearch(true)
         }
         // No corner landmark while hidden. A reveal glyph collides with the fan's "+" and
@@ -2819,6 +2986,7 @@ PlasmaCore.Dialog {
     property Connections libraryWatch: Connections {
         target: notesStore
         function onChanged() {
+            if (dialog.rootSwitchCommitting) return
             var openId = dialog.selectedId
             dialog.applyManifest(notesStore.load())
             if(dialog.expanded && openId !== "") {
@@ -2869,13 +3037,51 @@ PlasmaCore.Dialog {
         id: rootFolderDialog
         title: "Choose the notes folder"
         currentFolder: shellControl.rootPath ? "file://" + shellControl.rootPath : ""
-        onAccepted: {
-            var refusal = shellControl.openFolder(selectedFolder)
-            if(refusal) { dialog.saveStatus = refusal; return }
-            dialog.applyManifest(notesStore.load())
-            dialog.saveStatus = ""
-            alignment.restart()
-        }
+        onAccepted: { dialog.switchRootFolder(selectedFolder) }
+    }
+    function switchRootFolder(folder) {
+        if (dialog.navigationPending) return false
+        dialog.navigationPending = true
+        dialog.checkEditorsForClose(null, function(ready, release) {
+            var switched = false
+            try {
+                if (!ready) {
+                    dialog.saveStatus = "Folder refused · editor push pending; retry after it finishes"
+                    return
+                }
+                // Native openRoot flushes pending saves before tearing down the old root.
+                dialog.rootSwitchCommitting = true
+                var refusal = shellControl.openFolder(folder)
+                if (refusal) { dialog.saveStatus = refusal; return }
+                switched = true
+                // This is the commit boundary. Do not re-enable old editors after their
+                // Document objects have been retired by openRoot. Destroy the old deck
+                // WebEngine (its JS retains old IDs) and old pinned delegates first;
+                // a later openNote creates a fresh deck for the new manifest.
+                dialog.loaded = false
+                dialog.expanded = false
+                dialog.pinnedIds = []
+                dialog.libraryOpen = false
+                dialog.paletteOpen = false
+                dialog.selected = 0
+                dialog.dirty = false
+                dialog.selectedDirty = false
+                dialog.applyManifest(notesStore.load())
+                dialog.restorePersistedPins()
+                dialog.saveStatus = ""
+                alignment.restart()
+            } catch (e) {
+                dialog.saveStatus = "Folder refused · " + e
+            } finally {
+                dialog.rootSwitchCommitting = false
+                // On refusal/timeout the original windows and their buffers stay live.
+                // After success they are gone; releasing captured references can revive
+                // an obsolete editor or address a destroyed delegate.
+                if (!switched) release()
+                dialog.navigationPending = false
+            }
+        })
+        return true
     }
     /** Named entry point so the web Settings page can raise the chooser too. */
     function chooseRootFolder() { rootFolderDialog.open() }
@@ -2915,7 +3121,8 @@ PlasmaCore.Dialog {
                    text:"Close or continue?" }
             Text { objectName:"close-prompt-body"; x:18; y:40; width:474; wrapMode:Text.Wrap
                    font.family:dialog.neutralFont; font.pixelSize:12; color:dialog.neutralText
-                   text:dialog.dirty ? "Unsaved edits exist. Closing discards them; saved .md files remain. Cancel to save each edited note first." : "Close Fan Fold? Your saved .md files remain on disk." }
+                   text:dialog.closeSaveError ? dialog.closeSaveError :
+                        (dialog.dirty ? "Unsaved edits exist. Closing discards them; saved .md files remain. Cancel to save each edited note first." : "Close Fan Fold? Your saved .md files remain on disk.") }
             // The safe choice keeps the quiet, note-derived fill of every other control here.
             Rectangle {
                 id: continueButton; objectName:"close-prompt-cancel"
@@ -2947,9 +3154,9 @@ PlasmaCore.Dialog {
                 activeFocusOnTab: true
                 Accessible.role: Accessible.Button
                 Accessible.name: "Close and discard unsaved edits"
-                Accessible.onPressAction: { dialog.allowDiscard=true; Qt.quit() }
+                Accessible.onPressAction: { dialog.requestDiscardClose() }
                 Keys.onPressed: function(event) {
-                    if(event.key===Qt.Key_Space || event.key===Qt.Key_Return || event.key===Qt.Key_Enter) { dialog.allowDiscard=true; Qt.quit(); event.accepted=true }
+                    if(event.key===Qt.Key_Space || event.key===Qt.Key_Return || event.key===Qt.Key_Enter) { dialog.requestDiscardClose(); event.accepted=true }
                 }
                 Text { anchors.centerIn:parent; font.family:dialog.neutralFont; font.pixelSize:12; font.bold:true
                        color:dialog.neutralText; text:"Close (discard unsaved edits)" }
@@ -2957,7 +3164,7 @@ PlasmaCore.Dialog {
                             color:"transparent"; visible:discardButton.activeFocus
                             border.width:2; border.color:dialog.neutralAccent }
                 MouseArea { id: discardArea; anchors.fill:parent; hoverEnabled:true; cursorShape:Qt.PointingHandCursor
-                            onClicked: { dialog.allowDiscard=true; Qt.quit() } }
+                            onClicked: { dialog.requestDiscardClose() } }
             }
         }
     }
@@ -3034,7 +3241,7 @@ PlasmaCore.Dialog {
         /** `dirty` is the AGGREGATE (close guard); `self` is the selected note's own
          *  buffer state, which is what the File details panel has to compare against
          *  the file. Older callers passing two arguments still work. */
-        function status(text,dirty,self) { dialog.saveStatus=text; dialog.dirty=dirty; dialog.selectedDirty=(self===true) }
+        function status(text,dirty,self) { dialog.saveStatus=dialog.closeSaveError || text; dialog.dirty=dirty; dialog.selectedDirty=(self===true) }
         /** Ask for a recording's NAME, then hand it back through the web channel's callback.
          *  Named deliberately, with no timestamp default: a voice note is worth finding by what
          *  it says. Cancelling returns an empty string and the clip is discarded. */

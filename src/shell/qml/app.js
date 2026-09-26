@@ -13,7 +13,7 @@ fan.call=(method,...args)=>new Promise(resolve=>notes[method](...args,resolve));
  * dirty flag, which is what the File details panel compares against the file.
  * Guarded for an empty deck: the 1 s poll calls this unconditionally, and with no notes
  * `states[active]` does not exist. */
-fan.publish=()=>{if(!fan.states[fan.active]){notes.status("",false,false);return;}const other=fan.states.filter((s,i)=>i!==fan.active&&(s.dirty||s.busy)).length;notes.status(fan.states[fan.active].status+(other?" · "+other+" other note(s) unsaved":""),fan.states.some(s=>s.dirty||s.busy),!!fan.states[fan.active].dirty);};
+fan.publish=()=>{const pending=s=>s.dirty||s.busy||s.pendingEdits>0;const active=fan.states[fan.active];if(!active){notes.status("",fan.states.some(pending),false);return;}const other=fan.states.filter((s,i)=>i!==fan.active&&pending(s)).length;notes.status(active.status+(other?" · "+other+" other note(s) unsaved":""),fan.states.some(pending),!!active.dirty);};
 /** The routine footer is one of two words, derived from the dirty flag and nothing else:
  * `Saved` when this buffer matches the file it was loaded from or last saved to,
  * `Unsaved` when it does not. Longer phrasings only restate the action the reader just
@@ -25,7 +25,7 @@ fan.publish=()=>{if(!fan.states[fan.active]){notes.status("",false,false);return
  * Compare against the engine export captured AFTER load, never raw bytes, which may
  * normalize. */
 fan.status=i=>{const s=fan.states[i];return s.dirty?(s.external?"CONFLICT · external file changed; edits kept":"Unsaved"):(s.external?"External change · click RELOAD":"Saved")};
-fan.changed=i=>{const s=fan.states[i];if(!s.loaded)return;const text=fan.editors[i].getValue();s.dirty=text!==s.baseline;s.status=fan.status(i);fan.publish();
+fan.changed=i=>{const s=fan.states[i];if(!s.loaded)return;const text=fan.editors[i].getValue();s.dirty=text!==s.baseline||!!s.pushError;s.status=s.pushError||fan.status(i);fan.publish();
  // Autosave seam: hand the buffer to the native engine on every edit. The engine owns the
  // 250 ms debounce and the crash-recovery journal, so nothing is scheduled here. This does
  // not commit and does not change the footer wording — an unsaved buffer still reads
@@ -35,16 +35,49 @@ fan.changed=i=>{const s=fan.states[i];if(!s.loaded)return;const text=fan.editors
  // re-baselining to the editor's live value when the engine reports a commit would mark
  // text typed since that push as already-saved, reporting "Saved" for characters the
  // file does not contain.
- if(s.dirty && !s.busy) { s.pushed=text; notes.noteEdited(s.id,text); }};
+ // A revert may match the file baseline while the native debounce still holds
+ // the preceding edit. Replace that pending buffer even though the UI is clean.
+ if(!s.busy && (s.dirty || (s.pushed!==undefined && s.pushed!==text))) {
+  s.pushed=text;
+  const revisionAtPush=s.revision,serial=s.pushSerial=(s.pushSerial||0)+1;
+  s.pendingEdits=(s.pendingEdits||0)+1;fan.publish();
+  fan.call("noteEdited",s.id,text).then(ok=>{
+   s.pendingEdits--;
+   if(ok===true) s.lastAcknowledgedPush=text;
+   if(s.loaded && s.revision===revisionAtPush && s.pushSerial===serial){
+    if(ok===false){
+     s.pushError="Save refused: recovery or external revision failed; keep this window open and copy edits";
+     s.status=s.pushError;s.dirty=true;
+    }else if(ok===true && s.pushError){
+     s.pushError="";s.dirty=fan.editors[i].getValue()!==s.baseline;s.status=fan.status(i);
+    }
+   }
+   fan.publish();
+  });
+ }};
+fan.closeReady = excludedId => {
+ const safe = s => {
+  if(!s.loaded || s.busy || s.pendingEdits > 0 || s.pushError) return false;
+  const i = fan.states.indexOf(s), text = fan.editors[i]?.getValue();
+  if(text === undefined) return false;
+  if(text !== s.pushed && text !== s.baseline) { fan.changed(i); return false; }
+  if(s.lastAcknowledgedPush !== undefined && s.lastAcknowledgedPush !== text) {
+   // A late older WebChannel call replaced the latest native buffer.
+   s.pushed=null;fan.changed(i);return false;
+  }
+  return true;
+ };
+ return fan.states.every(s => s.id === excludedId || safe(s));
+};
 /** Capture id, revision and Markdown before async bridge dispatch; never target the current selection later. */
 fan.save=async i=>{
- const s=fan.states[i];if(!s.loaded||s.busy)return;
- fan.changed(i);if(!s.dirty)return;
- // A save in flight has not landed yet, so the buffer still differs from the file: the
- // routine word stays "Unsaved" rather than becoming a third transient state.
+ const s=fan.states[i];if(!s.loaded)return {ok:false,error:"Note not ready"};
+ if(s.busy)return s.pendingSave;
+ fan.changed(i);if(!s.dirty)return {ok:true};
  const id=s.id,expected=s.revision,text=fan.editors[i].getValue();s.busy=true;s.status="Unsaved";fan.publish();
- const r=await fan.call("saveNote",id,text,expected);s.busy=false;
- if(r.ok){s.revision=r.revision;s.baseline=text;s.external=false;s.dirty=fan.editors[i].getValue()!==text;s.status=fan.status(i);}
+ s.pendingSave=fan.call("saveNote",id,text,expected);
+ const r=await s.pendingSave;s.busy=false;s.pendingSave=null;
+ if(r.ok){s.revision=r.revision;s.baseline=text;s.external=false;s.pushError="";s.pushSerial=(s.pushSerial||0)+1;s.pushed=text;s.dirty=fan.editors[i].getValue()!==text;s.status=fan.status(i);if(s.dirty)fan.changed(i);}
  else {s.status=r.error;s.dirty=true;if(r.error.includes("CONFLICT"))s.external=true;}
  fan.publish();return r;
 };
@@ -54,7 +87,7 @@ fan.reload=async i=>{
  if(s.dirty){s.status="CONFLICT · reload refused: copy edits first; buffer kept";fan.publish();return;}
  const before=fan.editors[i].getValue();
  s.busy=true;const r=await fan.call("loadNote",s.id);
- if(s.dirty || fan.editors[i].getValue()!==before){s.busy=false;s.dirty=true;s.status="CONFLICT · edited during reload; buffer kept";fan.publish();return;}
+ if(s.dirty || fan.editors[i].getValue()!==before){s.busy=false;s.dirty=true;s.status="CONFLICT · edited during reload; buffer kept";fan.publish();fan.changed(i);return;}
  if(r.ok){s.loaded=false;fan.editors[i].setValue(r.text);fan.ranges[i]=null;s.revision=r.revision;s.filename=r.filename;s.baseline=fan.editors[i].getValue();s.loaded=true;fan.frames[i].contentDocument.getElementById("editor").inert=false;s.external=false;s.dirty=false;s.status=fan.status(i);}
  else s.status=r.error;
  s.busy=false;fan.publish();
@@ -73,8 +106,12 @@ fan.reload=async i=>{
 fan.poll=async()=>{
  for(let i=0;i<fan.states.length;i++){
   const s=fan.states[i];if(!s.loaded||s.busy)continue;
+  const pushedAtProbe=s.pushed;
   const r=await fan.call("probeNote",s.id);
   if(!r.ok){s.status=r.error;continue;}
+  if(r.saveError && r.saveError.includes("Recovery write failed")){
+   s.status=r.saveError;s.dirty=true;continue;
+  }
   if(r.conflict){s.external=true;s.status=s.dirty?"CONFLICT · external change; edits kept, save refused":"External change · click RELOAD";continue;}
   if(r.committed){
    // Our own autosave landed. Adopt its revision and re-baseline to the text that was
@@ -85,7 +122,7 @@ fan.poll=async()=>{
    // remainder, so a tail typed during the write reaches disk instead of being marked
    // clean.
    s.revision=r.revision;s.external=false;
-   s.baseline=(s.pushed!==undefined)?s.pushed:fan.editors[i].getValue();
+   s.baseline=(pushedAtProbe!==undefined)?pushedAtProbe:fan.editors[i].getValue();
    s.dirty=false;s.status=fan.status(i);
    fan.changed(i);
    continue;

@@ -81,6 +81,31 @@ tab geometry, auto-hide, and per-note icons — all live, all applied the moment
 - **Everything themed** — tooltips, scrollbars, tables, panels: no unstyled platform chrome.
 - **KDE-native** — Qt 6, KWin dock windows, Plasma virtual-desktop aware, Wayland first.
 
+## Current release: 0.2.0-11
+
+[Download the Debian amd64 package](https://github.com/preyevates/fan-fold/releases/tag/v0.2.0-11).
+This release adds folder-scoped fans, whole-library search (Ctrl+F), scrolling for large
+fans, per-note typography, safer close/navigation handling, and AppStream metadata with
+raster icons for software centres. External changes stop conflicting saves rather than
+silently replacing the editor buffer.
+
+### Save and filesystem limits
+
+Normal close and tray quit wait for pending editor changes and refuse to close when the
+final Markdown save fails. If recovery itself fails, keep the window open and copy your
+edits; in-memory text is not a durable backup.
+
+Atomic saves retain **one prior displaced inode per note**, in the library's hidden
+`.fanfold-displaced/` directory on the same filesystem. Changed or ambiguous retained
+files stop subsequent saves and are preserved for inspection. This is bounded protection,
+not indefinite external-editor compatibility: writes through an old open file descriptor
+after its one-generation retention window can no longer be detected or preserved. Keep
+that directory with the library; do not treat it as a complete version history.
+
+Asset and icon writes reject symlink substitution and avoid overwriting existing files.
+They do not guarantee confinement against another authorized process concurrently moving
+an already-open directory outside the library.
+
 ## Install
 
 ### Debian / Ubuntu (recommended)
@@ -105,7 +130,7 @@ sudo apt install build-essential cmake \
   plasma-desktoptheme
 
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j"$(nproc)"
+cmake --build build -j"$(bash tools/safe-build-jobs.sh)"
 sudo cmake --install build
 ```
 
@@ -116,12 +141,16 @@ packages are needed for them.
 
 Fan Fold asks for a notes folder on first launch — pick a new one or an existing folder of
 Markdown files. It writes nothing into that folder until you ask it to: `Assets/` appears the
-first time you attach an image or icon, `Archive/` the first time you archive a note.
+first time you attach an image or icon, `Archive/` the first time you archive a note,
+and `.fanfold-displaced/` when saving an existing note.
 
 Settings live in `~/.config/FanFold/`, library state in `~/.local/share/FanFold/`. Your notes
 never leave the folder you chose.
 
-**Requirements:** KDE Plasma 6 on Wayland or X11, Qt 6.8 or newer.
+**Requirements:** KDE Plasma 6 on Wayland or X11, Qt 6.8 or newer. The published
+0.2.0-11 amd64 package is built on Ubuntu 26.04 (resolute); older distributions may
+not provide its required library versions. Use `apt` so incompatible dependencies
+are reported rather than bypassed.
 
 ## How it is built
 

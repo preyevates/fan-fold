@@ -10,6 +10,29 @@ find_package(Python3 3.11 REQUIRED COMPONENTS Interpreter)
 
 enable_testing()
 
+find_program(NODE_EXECUTABLE node)
+if(NODE_EXECUTABLE)
+    add_test(NAME fanfold-pending-edits
+        COMMAND ${NODE_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_pending_edits.js)
+    add_test(NAME fanfold-navigation-gate
+        COMMAND ${NODE_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_navigation_gate.js)
+endif()
+
+add_test(NAME fanfold-icon-export-security
+    COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/test_icon_export_security.py)
+add_test(NAME fanfold-asset-import-security
+    COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/test_asset_import_security.py)
+
+# A valid metainfo file alone is not sufficient: Discover's PackageKit backend
+# discards components without a package name. Check the AppStream catalog output.
+find_program(APPSTREAMCLI_EXECUTABLE appstreamcli)
+if(APPSTREAMCLI_EXECUTABLE)
+    add_test(NAME fanfold-appstream-package
+        COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/test_appstream_metadata.py
+                ${APPSTREAMCLI_EXECUTABLE})
+    set_tests_properties(fanfold-appstream-package PROPERTIES TIMEOUT 30)
+endif()
+
 if(NOT TARGET FanFold::DocumentEngine)
     add_subdirectory(../../src/fanfold fanfold-engine)
 endif()
@@ -22,6 +45,16 @@ foreach(suite documentcollection librarymodels session themecatalog)
     add_test(NAME fanfold-${suite} COMMAND tst_${suite})
     set_tests_properties(fanfold-${suite} PROPERTIES TIMEOUT 120)
 endforeach()
+
+# Integrated editor-store and document-engine disk revision contract.
+add_executable(tst_externalediting
+    tst_externalediting.cpp
+    ../../src/shell/storeadapter.cpp
+    ../../src/shell/storeadapter.h)
+target_include_directories(tst_externalediting PRIVATE ../../src/shell)
+target_link_libraries(tst_externalediting PRIVATE FanFold::DocumentEngine Qt6::Core Qt6::Test)
+add_test(NAME fanfold-externalediting COMMAND tst_externalediting)
+set_tests_properties(fanfold-externalediting PROPERTIES TIMEOUT 120)
 
 # The shell adapter keeps search transient: matches replace the visible deck without
 # changing or persisting the open folder's own order.
@@ -78,6 +111,9 @@ if(QMLTESTRUNNER_EXECUTABLE)
     configure_file(
         ${CMAKE_CURRENT_SOURCE_DIR}/qml/tst_layoutcontract.qml
         ${FANFOLD_QML_TEST_STAGE}/tst_layoutcontract.qml COPYONLY)
+    configure_file(
+        ${CMAKE_CURRENT_SOURCE_DIR}/qml/tst_fanscroll.qml
+        ${FANFOLD_QML_TEST_STAGE}/tst_fanscroll.qml COPYONLY)
     configure_file(
         ${CMAKE_CURRENT_SOURCE_DIR}/qml/tst_libraryrowaction.qml
         ${FANFOLD_QML_TEST_STAGE}/tst_libraryrowaction.qml COPYONLY)
