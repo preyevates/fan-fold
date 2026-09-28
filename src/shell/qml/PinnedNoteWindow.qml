@@ -4,47 +4,207 @@ import QtWebEngine
 import QtWebChannel
 
 /**
- * One pinned note in its own ordinary window.
+ * One pinned note in its own window, showing the SAME card as the fan (NoteCard.qml):
+ * title spine, editable title, pin and close, the whole footer and its panels, and the
+ * same editor page with its toolbar.
  *
- * These are plain Qt windows, not popups: several can be open at once, they stay open
- * when they lose focus, and they appear in the window list like anything else. That is
- * the one place in this application where a plain `Window` is CORRECT — a pinned note is
- * a normal top-level the compositor places, not an edge dock. The fan itself remains a
- * PlasmaCore.Dialog, which is what makes it sit flush at the screen edge; see main.cpp.
+ * This window is the card's host. Every card action here names `documentId`, never the
+ * fan's selection, so nothing pressed in this window can reach another note.
+ *
+ * Several can be open at once, they stay open when they lose focus, and they appear in
+ * the window list like anything else. They are kept above other windows: the flag covers
+ * X11, and ShellControl.keepAbove asks KWin directly, because Wayland gives a client no
+ * way to raise itself (see main.cpp).
  *
  * Closing one returns the note to the fan. It never deletes anything and never discards
  * the buffer: the editor is flushed through the engine on the way out, and the engine's
  * 250 ms autosave and recovery journal have been live the whole time the window was open.
  *
  * Position is deliberately never assigned. An ordinary Wayland client does not own its
- * own x/y, and assigning it anyway yields a window the compositor places wherever it
- * likes. Only the settled SIZE is persisted, which a client does own.
+ * own x/y. Only the settled SIZE is persisted, which a client does own.
  */
 Window {
     id: pinnedWindow
 
     required property string documentId
     required property var record            // the engine's Document object
-    property color paper: "#f5f0e6"
-    property color ink: "#1b1b1f"
-    property string noteFont: "Noto Sans"
-    property real iconSize: 16
+    /** The fan's shell: shared palette, appearance, manifest and the Library panel. */
+    required property var fan
     property string status: "Saved"
     property bool noteDirty: false
     property bool editorEnabled: true
+    /** What a successful close gate does next: return the note, or file it. */
+    property string closeIntent: "unpin"
 
     signal closeRequested(string id)
 
     objectName: "pinned-window-" + documentId
     title: (record ? record.title : "Note") + " · Fan Fold"
-    minimumWidth: 280
-    minimumHeight: 220
-    width: Math.max(minimumWidth, record && record.pinnedWindowWidth > 0 ? record.pinnedWindowWidth : 420)
-    height: Math.max(minimumHeight, record && record.pinnedWindowHeight > 0 ? record.pinnedWindowHeight : 340)
-    color: pinnedWindow.paper
-    // An ordinary window: no always-on-top, no tool-window flag, no focus stealing.
-    flags: Qt.Window
+    minimumWidth: 400
+    minimumHeight: 260
+    // A first pin opens at the fan card's own size, so the two read as the same card.
+    width: Math.max(minimumWidth, record && record.pinnedWindowWidth > 0 ? record.pinnedWindowWidth : fan.cardWidth)
+    height: Math.max(minimumHeight, record && record.pinnedWindowHeight > 0 ? record.pinnedWindowHeight : fan.cardHeight)
+    // Opaque paper rather than transparent: this window requests no alpha buffer, and an
+    // opaque window with a transparent clear colour paints its corners black.
+    color: pinnedWindow.paperColor
+    flags: Qt.Window | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
     visible: true
+
+    // ---- The card's host interface (read by NoteCard, SwatchPopup, IconPanel) ----------
+    property var own: notesStore.colourOf(documentId)
+    function refreshOwn() { pinnedWindow.own = notesStore.colourOf(pinnedWindow.documentId) }
+    readonly property var appearance: fan.appearance
+    readonly property real cardWidth: pinnedWindow.width
+    readonly property real cardHeight: pinnedWindow.height
+    readonly property bool expanded: true
+    readonly property string selectedId: documentId
+    readonly property bool selectedIsPinned: true
+    readonly property string cardTitle: record ? record.title : ""
+    readonly property string closeExplanation: "Close · returns this note to the fan"
+    readonly property string saveStatus: status
+    readonly property color paperColor: own && own.paper ? own.paper : "#f5f0e6"
+    readonly property color ink: own && own.ink ? own.ink : "#1b1b1f"
+    readonly property string noteFont: fan.noteFont
+    readonly property color neutralWhite: fan.neutralWhite
+    readonly property var activePalette: fan.activePalette
+    readonly property var palettes: fan.palettes
+    readonly property string palette: fan.palette
+    // One-note views of the fan's per-note maps: a pinned note is off the fan, so the
+    // fan's maps never carry it.
+    readonly property var papers: ({[documentId]: own ? own.paper : undefined})
+    readonly property var inkModes: ({[documentId]: own ? own.inkMode : "auto"})
+    readonly property var inkStored: ({[documentId]: own ? own.inkStored : "auto"})
+    readonly property var manifest: ({folderCount: fan.manifest.folderCount,
+                                      inkInPalette: {[documentId]: own ? own.inkInPalette : false}})
+    function inkOf(id) { return pinnedWindow.ink }
+    function paperInPalette(id) { return own ? own.inPalette === true : false }
+    function iconOf(id) { return own && own.icon ? String(own.icon) : "" }
+    function derivedTone(base, amount) { return fan.derivedTone(base, amount) }
+
+    property bool paletteOpen: false
+    property string paletteMode: "paper"
+    property bool swatchKeyboardCue: false
+    property bool confirmFolderColour: false
+    property bool showInfo: false
+    property var infoRows: []
+    property bool iconPanelOpen: false
+    property bool iconToTab: true
+    property bool iconToNote: false
+    property bool iconInline: false
+    property string confirmArchiveId: ""
+    property string confirmTrashId: ""
+    property bool confirmQuit: false
+
+    onPaletteOpenChanged: if (!paletteOpen) confirmFolderColour = false
+    onPaletteModeChanged: confirmFolderColour = false
+    onNoteDirtyChanged: refreshInfo()
+
+    function dismissPanels() { paletteOpen = false; showInfo = false; iconPanelOpen = false }
+    /** The page-side disclosures (Settings, formatting) close whenever a native panel opens,
+     *  so the card never stacks two panels — the same rule as the fan. */
+    function closePagePanels() {
+        pinnedEditor.runJavaScript("if(window.appearance&&appearance.open) appearance.toggle(false); if(window.fan&&fan.formattingVisible&&fan.formattingVisible()) fan.toggleFormatting()")
+    }
+    function togglePalette(mode) {
+        var wanted = mode ? mode : "paper"
+        var opening = !paletteOpen || paletteMode !== wanted
+        if (opening) { showInfo = false; iconPanelOpen = false; closePagePanels() }
+        paletteMode = wanted
+        paletteOpen = opening
+        swatchKeyboardCue = false
+        if (opening) card.focusCurrentSwatch()
+    }
+    function moveSwatchFocus(step) { card.moveSwatchFocus(step) }
+    function syncColours() { refreshOwn(); pinnedEditor.runJavaScript("window.fan && fan.recolour && fan.recolour()") }
+    function chooseSwatch(color) {
+        var result = paletteMode === "ink" ? notesStore.setInk(documentId, color) : notesStore.setPaper(documentId, color)
+        if (result.ok) { fan.applyManifest(result); syncColours() }
+        else status = result.error
+    }
+    function chooseInk(value) {
+        var result = notesStore.setInk(documentId, value)
+        if (result.ok) { fan.applyManifest(result); syncColours() }
+        else status = result.error
+    }
+    function choosePalette(key) { fan.choosePalette(key); refreshOwn() }
+    function applyColourToFolder() {
+        if (!confirmFolderColour) {
+            confirmArchiveId = ""; confirmTrashId = ""; confirmQuit = false
+            confirmFolderColour = true
+            confirmLapse.restart()
+            return
+        }
+        confirmFolderColour = false; confirmLapse.stop()
+        var inkMode = paletteMode === "ink"
+        var value = inkMode ? String(own.inkStored) : String(own.paper)
+        var result = notesStore.applyColourToOpenFolder(inkMode ? "ink" : "paper", value)
+        if (result.ok) { fan.applyManifest(result); fan.syncEditorColours(); syncColours() }
+        else status = result.error
+    }
+    function toggleFormatting() {
+        paletteOpen = false; showInfo = false
+        pinnedEditor.runJavaScript("fan.toggleFormatting()")
+    }
+    function toggleSettings() {
+        paletteOpen = false; showInfo = false
+        pinnedEditor.runJavaScript("appearance.toggle()")
+    }
+    function reloadNote() { pinnedEditor.runJavaScript("fan.reload()") }
+    /** The Library is one panel over the whole collection, so it opens in the fan. */
+    function toggleLibrary() { dismissPanels(); fan.toggleLibrary(true); fan.requestActivate() }
+    function refreshInfo() {
+        if (!showInfo) { infoRows = []; return }
+        infoRows = fan.infoRowsFor(store.info(documentId), noteDirty)
+    }
+    function toggleInfo(force) {
+        var opening = typeof force === "boolean" ? force : !showInfo
+        if (opening) { paletteOpen = false; iconPanelOpen = false; closePagePanels() }
+        showInfo = opening
+        refreshInfo()
+    }
+    function toggleIconPanel(force) {
+        var opening = typeof force === "boolean" ? force : !iconPanelOpen
+        if (opening) { paletteOpen = false; showInfo = false; closePagePanels() }
+        iconPanelOpen = opening
+    }
+    function setIconDestination(which) { fan.setIconDestinationOn(pinnedWindow, which) }
+    function setNoteIcon(relative) {
+        collection.setIcon(documentId, relative)
+        fan.applyManifest(notesStore.load())
+        refreshOwn()
+    }
+    function applyIcon(entry) { fan.applyIconOn(pinnedWindow, pinnedEditor, entry) }
+    function applyTitle() {
+        pinnedEditor.runJavaScript("fan.renameActive(" + JSON.stringify(card.titleText) + ")")
+    }
+    function armArchive() {
+        confirmTrashId = ""; confirmQuit = false; confirmFolderColour = false
+        confirmArchiveId = confirmArchiveId === documentId ? "" : documentId
+        if (confirmArchiveId) confirmLapse.restart()
+    }
+    function armTrash() {
+        confirmArchiveId = ""; confirmQuit = false; confirmFolderColour = false
+        confirmTrashId = confirmTrashId === documentId ? "" : documentId
+        if (confirmTrashId) confirmLapse.restart()
+    }
+    function armQuit() {
+        confirmArchiveId = ""; confirmTrashId = ""; confirmFolderColour = false
+        confirmQuit = !confirmQuit
+        if (confirmQuit) confirmLapse.restart()
+    }
+    // Filing moves the file, so it waits for the same gate as closing: the page must
+    // acknowledge every push and the engine must commit before the file moves.
+    function archiveSelected() { confirmArchiveId = ""; requestSafeClose("archive") }
+    function trashSelected() { confirmTrashId = ""; requestSafeClose("trash") }
+    function togglePinSelected() { requestSafeClose("unpin") }
+    function collapse() { requestSafeClose("unpin") }
+    function requestClose() { confirmQuit = false; fan.requestClose() }
+    Timer {
+        id: confirmLapse; interval: 4000
+        onTriggered: { pinnedWindow.confirmArchiveId = ""; pinnedWindow.confirmTrashId = ""
+                       pinnedWindow.confirmQuit = false; pinnedWindow.confirmFolderColour = false }
+    }
 
     onWidthChanged: sizePersistence.restart()
     onHeightChanged: sizePersistence.restart()
@@ -56,6 +216,14 @@ Window {
         onTriggered: collection.setPinnedWindowSize(pinnedWindow.documentId,
                                                     pinnedWindow.width, pinnedWindow.height)
     }
+    // KWin maps the window asynchronously; ask for keep-above once it exists there.
+    Timer {
+        id: keepAboveRequest
+        interval: 400; repeat: false
+        onTriggered: shellControl.keepAbove(pinnedWindow.title)
+    }
+    Component.onCompleted: keepAboveRequest.start()
+    onTitleChanged: keepAboveRequest.restart()
 
     property bool closeCheckPending: false
     property int closeAttempt: 0
@@ -116,8 +284,9 @@ Window {
         if (!pinnedEditor || !pinnedEditor.url || pinnedEditor.loading) { done(false); return }
         pinnedEditor.runJavaScript("window.fan && fan.closeReady()", done)
     }
-    function requestSafeClose() {
+    function requestSafeClose(intent) {
         if (pinnedWindow.closeCheckPending) return
+        pinnedWindow.closeIntent = intent || "unpin"
         pinnedWindow.closeCheckPending = true
         const attempt = ++pinnedWindow.closeAttempt
         closeDeadline.start()
@@ -129,42 +298,56 @@ Window {
     }
     onClosing: function(close) {
         close.accepted = false
-        requestSafeClose()
+        requestSafeClose("unpin")
     }
 
-    Rectangle {
-        id: header
-        anchors.top: parent.top; anchors.left: parent.left; anchors.right: parent.right
-        height: 28
-        color: Qt.darker(pinnedWindow.paper, 1.08)
+    NoteCard {
+        id: card
+        anchors.fill: parent
+        host: pinnedWindow
+        bridge: pinnedBridgeObject
+        cardTop: 0
 
-        Text {
-            anchors.left: parent.left; anchors.leftMargin: 10
-            anchors.right: unpinButton.left; anchors.rightMargin: 6
-            anchors.verticalCenter: parent.verticalCenter
-            text: pinnedWindow.record ? pinnedWindow.record.title : ""
-            color: pinnedWindow.ink
-            font.family: pinnedWindow.noteFont; font.pixelSize: 11; font.weight: Font.DemiBold
-            elide: Text.ElideRight
+        // The title spine and the strip above the title are the window's handle: it is
+        // frameless, so the compositor moves it from there. Only those empty areas, so a
+        // drag that selects text in the title or the note is never taken for a move.
+        // startSystemMove is the native grab and is what works under Wayland.
+        Repeater {
+            model: [{x: 0, y: 0, w: 40, h: -1}, {x: 40, y: 0, w: -1, h: 9}]
+            delegate: Item {
+                required property var modelData
+                z: 999
+                x: modelData.x; y: modelData.y
+                width: modelData.w < 0 ? card.width - modelData.x : modelData.w
+                height: modelData.h < 0 ? card.height : modelData.h
+                DragHandler {
+                    id: moveGrab
+                    target: null
+                    onActiveChanged: if (moveGrab.active) pinnedWindow.startSystemMove()
+                }
+            }
         }
-
-        QuietButton {
-            id: unpinButton
-            objectName: "pinned-unpin"
-            anchors.right: parent.right; anchors.rightMargin: 6
-            anchors.verticalCenter: parent.verticalCenter
-            size: pinnedWindow.iconSize + 12; iconSize: pinnedWindow.iconSize
-            glyph: "window-unpin"; ink: pinnedWindow.ink
-            explanation: "Return this note to the fan"
-            onClicked: pinnedWindow.requestSafeClose()
-        }
-
-        // The native move grab: the compositor moves the window, nothing here tracks the
-        // pointer. This is what makes dragging behave correctly under Wayland.
-        DragHandler {
-            id: moveGrab
-            target: null
-            onActiveChanged: if(moveGrab.active) pinnedWindow.startSystemMove()
+        // Escape with focus in the card (not the editor) closes a panel first, then the
+        // window — the fan's order.
+        Keys.onEscapePressed: pinnedBridgeObject.collapse()
+        // The four edges and corners resize, since a frameless window has no border.
+        Repeater {
+            model: [{e: Qt.LeftEdge, x: 0, y: 8, w: 5, h: -16, c: Qt.SizeHorCursor},
+                    {e: Qt.RightEdge, x: -5, y: 8, w: 5, h: -16, c: Qt.SizeHorCursor},
+                    {e: Qt.BottomEdge, x: 8, y: -5, w: -16, h: 5, c: Qt.SizeVerCursor},
+                    {e: Qt.TopEdge, x: 8, y: 0, w: -16, h: 5, c: Qt.SizeVerCursor},
+                    {e: Qt.BottomEdge | Qt.RightEdge, x: -8, y: -8, w: 8, h: 8, c: Qt.SizeFDiagCursor},
+                    {e: Qt.BottomEdge | Qt.LeftEdge, x: 0, y: -8, w: 8, h: 8, c: Qt.SizeBDiagCursor}]
+            delegate: MouseArea {
+                required property var modelData
+                z: 1000
+                x: modelData.x < 0 ? card.width + modelData.x : modelData.x
+                y: modelData.y < 0 ? card.height + modelData.y : modelData.y
+                width: modelData.w <= 0 ? card.width + modelData.w : modelData.w
+                height: modelData.h <= 0 ? card.height + modelData.h : modelData.h
+                cursorShape: modelData.c
+                onPressed: pinnedWindow.startSystemResize(modelData.e)
+            }
         }
     }
 
@@ -172,8 +355,8 @@ Window {
         id: pinnedEditor
         enabled: pinnedWindow.editorEnabled
         objectName: "pinned-editor"
-        anchors.top: header.bottom; anchors.left: parent.left
-        anchors.right: parent.right; anchors.bottom: pinnedFooter.top
+        parent: card.editorArea
+        anchors.fill: parent
         backgroundColor: "transparent"
         webChannel: pinnedChannel
         profile: WebEngineProfile { offTheRecord: true; httpCacheType: WebEngineProfile.MemoryHttpCache }
@@ -232,35 +415,6 @@ Window {
         }
     }
 
-    Item {
-        id: pinnedFooter
-        anchors.left: parent.left; anchors.leftMargin: 8
-        anchors.right: parent.right; anchors.rightMargin: 8
-        anchors.bottom: parent.bottom; anchors.bottomMargin: 4
-        height: pinnedWindow.iconSize + 12
-
-        // Notes autosave and Ctrl+S saves immediately (editor.js keydown handler), so
-        // there is no Save button. Format is the first and only control here.
-        QuietButton {
-            objectName: "pinned-format"
-            x: 0
-            size: pinnedWindow.iconSize + 12; iconSize: pinnedWindow.iconSize
-            glyph: "format-text-bold"; ink: pinnedWindow.ink
-            explanation: "Formatting"
-            onClicked: pinnedEditor.runJavaScript("window.fan && fan.toggleFormatting()")
-        }
-        Text {
-            objectName: "pinned-status"
-            x: (pinnedWindow.iconSize+12) + 12
-            anchors.verticalCenter: parent.verticalCenter
-            elide: Text.ElideRight
-            text: pinnedWindow.status; color: pinnedWindow.ink
-            font.family: pinnedWindow.noteFont; font.pixelSize: 10
-            Accessible.role: Accessible.StaticText
-            Accessible.name: pinnedWindow.status
-        }
-    }
-
     /** The same bridge shape `pinned.js` expects; it is a strict subset of the deck's.
      *
      *  The signatures carry NO callback parameter, exactly as the deck's bridge does.
@@ -274,51 +428,51 @@ Window {
         function probeNote(id) { return store.probe(id) }
         function saveNote(id, text, revision) { return store.save(id, text, revision) }
         function noteEdited(id, text) { return store.updateContent(id, text) }
-        /** WCAG relative luminance of a QML colour, local so this window never leans on
-         *  the deck's context-chain ids being resolvable from a separate file. */
-        function lumOf(c) {
-            function linear(v) { return v<=0.03928 ? v/12.92 : Math.pow((v+0.055)/1.055,2.4) }
-            return 0.2126*linear(c.r)+0.7152*linear(c.g)+0.0722*linear(c.b)
-        }
-        /** The note's own literal paper/ink plus global typography, as CSS variables —
-         *  exactly the keys editor-theme.css reads in the deck. */
-        function colours(id) {
-            // Ask the adapter for THIS note's colours by id rather than indexing the
-            // manifest's per-note maps. Those maps are keyed by fan membership, and a
-            // pinned note is by definition off the fan, so the manifest lookup yields
-            // undefined and the editor receives "--paper: undefined; --ink: undefined":
-            // text present, selectable, and invisible.
-            var own = notesStore.colourOf(id)
-            var settings = appearanceStore.load().settings
-            // The note's own family/size override wins over the global one when set.
-            var family = own && own.fontFamily ? String(own.fontFamily)
-                : (settings.fontFamilyName ? settings.fontFamilyName : "Noto Sans")
-            var size = own && own.fontSize > 0 ? own.fontSize : settings.fontSize
-            var paper = own && own.paper ? String(own.paper) : "#f5f0e6"
-            var ink = own && own.ink ? String(own.ink) : "#2b2b2b"
-            // The KEYS here must be exactly the custom properties editor-theme.css reads:
-            // --leading (line-height) and --tabs (tab-size), not near-synonyms like
-            // "line" and "tab" — a mismatched key is ignored silently, so the Line Space
-            // and Indent Size settings simply stop applying. --spine and --codeink drive
-            // fenced-code blocks; without them a code block paints the vendor default
-            // over the note's paper.
-            var spineColor = Qt.darker(Qt.color(paper), 1.14)
-            var spineLum = pinnedBridgeObject.lumOf(spineColor)
-            var codeink = ((spineLum+0.05)/0.05) >= (1.05/(spineLum+0.05)) ? "#101010" : "#f4f4f4"
-            return {paper: paper, ink: ink,
-                    spine: String(spineColor),
-                    codeink: codeink,
-                    tokenboost: spineLum >= 0.42 ? "none"
-                        : (spineLum < 0.12 ? "brightness(3.1) saturate(1.25)"
-                                           : "brightness(2.2) saturate(1.15)"),
-                    font: "\"" + family + "\", sans-serif",
-                    size: size + "px",
-                    leading: String(settings.lineSpacing),
-                    padx: settings.padX + "px", pady: settings.padY + "px",
-                    tabs: String(settings.tabSpacing), icon: settings.iconSize + "px"}
-        }
-        function status(text, dirty) { pinnedWindow.status = pinnedWindow.closeSaveError || text; pinnedWindow.noteDirty = dirty }
+        /** This note's own colours and typography override, by id. A pinned note is off
+         *  the fan, so the manifest's per-note maps do not carry it; appearance.js turns
+         *  this record into the same CSS the deck paints. */
+        function colours(id) { return notesStore.colourOf(id) }
+        /** `self` is accepted and ignored: this page has one note, so the aggregate IS it.
+         *  Declared because the shared page scripts pass three arguments, and the channel
+         *  refuses a call with more arguments than the method declares. */
+        function status(text, dirty, self) { pinnedWindow.status = pinnedWindow.closeSaveError || text; pinnedWindow.noteDirty = dirty }
         function closeWindow() { pinnedWindow.requestSafeClose() }
+        /** editor.js calls this on Escape: a panel over the card closes first, exactly as
+         *  in the fan; with none open the window closes and the note returns to the fan. */
+        function collapse() {
+            if (pinnedWindow.paletteOpen || pinnedWindow.showInfo || pinnedWindow.iconPanelOpen) pinnedWindow.dismissPanels()
+            else pinnedWindow.requestSafeClose()
+        }
+        function renameNote(id, title, revision) {
+            var result = store.rename(id, title, revision)
+            if (result.ok) { pinnedWindow.fan.applyManifest(notesStore.load()); pinnedWindow.refreshInfo() }
+            return result
+        }
+        function manifest() { return notesStore.load() }
+        function libraryPath() { return shellControl.rootPath }
+        function importAsset(name, base64, kind) { return shellControl.importAsset(name, base64, kind || "") }
+        function setNoteFont(id, family, size) {
+            var result = notesStore.setNoteFont(id, family, size)
+            if (result.ok) { pinnedWindow.fan.applyManifest(result); pinnedWindow.refreshOwn() }
+            return result
+        }
+        // Settings is the same web panel as the fan's (appearance.js), so it needs the
+        // same native calls. A saved change restyles every window through appearanceStore.
+        function appIcon() { return String(appIconSource) }
+        function appVersion() { return shellControl.appVersion() }
+        function chooseFolder() { pinnedWindow.fan.chooseRootFolder() }
+        function loadAppearance() { return appearanceStore.load() }
+        function saveAppearance(value) { return appearanceStore.save(value) }
+        function resetAppearance() { return appearanceStore.reset() }
+        function previewAppearance(value) { pinnedWindow.fan.appearance = appearanceStore.preview(value) }
+        function fontFamilies() { return fontCatalog.families() }
+        function fontResolve(family) { return fontCatalog.resolveFamily(family) }
+        function fontDescribe(family) { return fontCatalog.describe(family) }
+        function noteInfo(id) { return store.info(id) }
+        /** Recording-name answer, published as in the fan's bridge (see Main.qml). */
+        property string recordingName: ""
+        function beginRecordingName() { card.openRecordingPrompt("Name this recording") }
+        function ready() {}
     }
     property WebChannel pinnedChannel: WebChannel { id: pinnedChannel; registeredObjects: [pinnedBridgeObject] }
 
@@ -328,18 +482,17 @@ Window {
     }
     Shortcut {
         sequence: "Ctrl+W"
-        onActivated: pinnedWindow.requestSafeClose()
+        onActivated: pinnedWindow.requestSafeClose("unpin")
     }
 
     /** Live restyle: global appearance changes and this note's own colour changes must
-     *  reach an OPEN pinned window. Applying them only at construction would leave a
-     *  pinned window ignoring Settings edits and paper/ink assignments until reopened. */
+     *  reach an OPEN pinned window, not only at construction. */
     Connections {
         target: appearanceStore
         function onChanged() { pinnedEditor.runJavaScript("window.fan && fan.recolour && fan.recolour()") }
     }
     Connections {
         target: notesStore
-        function onChanged() { pinnedEditor.runJavaScript("window.fan && fan.recolour && fan.recolour()") }
+        function onChanged() { pinnedWindow.syncColours() }
     }
 }

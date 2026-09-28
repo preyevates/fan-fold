@@ -15,6 +15,11 @@
  * Usage: fanfold [--root <folder>] [--state <folder>]
  */
 #include <QCommandLineOption>
+#include <QDBusInterface>
+#include <QDBusReply>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QTimer>
 #include <QCommandLineParser>
 #include <QDir>
 #include <QDirIterator>
@@ -528,6 +533,64 @@ public:
                                    {QStringLiteral("url"), QUrl::fromLocalFile(entry.absoluteFilePath()).toString()}});
         }
         return out;
+    }
+
+    /** Ask KWin to keep this process's window titled `caption` above other windows.
+     *
+     *  Wayland gives a client no way to raise itself, and Qt's stays-on-top flag reaches
+     *  only X11. KWin's own scripting service can set the same "Keep Above Others" a user
+     *  sets from the window menu, so a one-shot script does exactly that and is unloaded
+     *  again. It matches on this process id as well as the caption (as a prefix, since
+     *  KWin may append a disambiguating suffix), so no other application's window can be
+     *  touched. Without KWin this is a silent no-op.
+     *
+     *  @return true when KWin accepted the script, which is not proof it matched. */
+    Q_INVOKABLE bool keepAbove(const QString &caption)
+    {
+        QDBusInterface scripting(QStringLiteral("org.kde.KWin"), QStringLiteral("/Scripting"),
+                                 QStringLiteral("org.kde.kwin.Scripting"));
+        if (!scripting.isValid()) {
+            return false;
+        }
+        const QString dir = QStandardPaths::writableLocation(QStandardPaths::RuntimeLocation);
+        if (dir.isEmpty()) {
+            return false;
+        }
+        static int serial = 0;
+        const QString plugin = QStringLiteral("fanfold-keepabove-%1-%2")
+                                   .arg(QCoreApplication::applicationPid()).arg(++serial);
+        const QString path = QDir(dir).filePath(plugin + QStringLiteral(".js"));
+        const QString quoted = QString::fromUtf8(
+            QJsonDocument(QJsonArray{caption}).toJson(QJsonDocument::Compact));
+        const QString script = QStringLiteral(
+            "(function(){var pid=%1,caption=%2[0];"
+            "function hold(w){if(w&&w.pid===pid&&String(w.captionNormal||w.caption).indexOf(caption)===0){w.keepAbove=true;}}"
+            "workspace.windowList().forEach(hold);"
+            "workspace.windowAdded.connect(hold);})();")
+                                   .arg(QCoreApplication::applicationPid()).arg(quoted);
+        QFile file(path);
+        if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            return false;
+        }
+        file.write(script.toUtf8());
+        file.close();
+        const QDBusReply<int> id = scripting.call(QStringLiteral("loadScript"), path, plugin);
+        if (!id.isValid() || id.value() < 0) {
+            QFile::remove(path);
+            return false;
+        }
+        QDBusInterface loaded(QStringLiteral("org.kde.KWin"),
+                              QStringLiteral("/Scripting/Script%1").arg(id.value()),
+                              QStringLiteral("org.kde.kwin.Script"));
+        loaded.call(QStringLiteral("run"));
+        // Long enough for a window KWin has not mapped yet to arrive through windowAdded.
+        QTimer::singleShot(3000, this, [plugin, path]() {
+            QDBusInterface(QStringLiteral("org.kde.KWin"), QStringLiteral("/Scripting"),
+                           QStringLiteral("org.kde.kwin.Scripting"))
+                .call(QStringLiteral("unloadScript"), plugin);
+            QFile::remove(path);
+        });
+        return true;
     }
 
     /** Open `folderUrl` as the library root. @return an empty string, or the refusal. */

@@ -37,6 +37,11 @@ public:
     /** A family name safe to interpolate into a CSS font-family string literal. */
     static bool safeFamily(const QString &name);
 
+signals:
+    /** A save landed. Every window showing a note restyles from it, not only the one
+     *  whose Settings panel made the change. */
+    void changed();
+
 private:
     AppearanceSettings *m_settings = nullptr;
 };

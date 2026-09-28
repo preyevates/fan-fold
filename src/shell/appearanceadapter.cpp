@@ -165,6 +165,7 @@ QVariantMap AppearanceAdapter::save(const QVariantMap &values)
                 {QStringLiteral("error"),
                  QStringLiteral("Appearance save failed; preview is not persisted")}};
     }
+    emit changed();
     return {{QStringLiteral("ok"), true},
             {QStringLiteral("settings"), settings},
             {QStringLiteral("warning"), QString()}};

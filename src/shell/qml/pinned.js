@@ -9,14 +9,17 @@
  * the identical editor, stylesheet and Markdown pipeline rather than a second, divergent
  * editor implementation. `index` is always 0 here.
  *
- * Deliberately NOT duplicated: the fan, the manifest, the palette and the appearance
- * panel. A pinned window is one note in a plain window; the card's chrome belongs to the
- * dock.
+ * It also presents the one-slot view of itself that appearance.js and editor-assets.js
+ * expect from the deck (`states`, `active`, `swatchColorOf`, `fontOf`, `focusSlot`,
+ * `setNoteFont`), so Settings, the note-font popover and file import run the same code
+ * in both places. The note's colours come from the adapter BY ID: a pinned note is off
+ * the fan, so the deck manifest's per-note maps do not carry it.
  */
 "use strict";
 const noteId = new URLSearchParams(location.search).get("id") || "";
 let pinned;
-const fan = window.fan = {editors: [], frames: [], active: 0, state: null};
+const fan = window.fan = {editors: [], frames: [], states: [], active: 0, state: null,
+                          own: null, manifest: null, linkBase: ""};
 window.fixtures = [];
 
 fan.call = (method, ...args) => new Promise(resolve => pinned[method](...args, resolve));
@@ -27,7 +30,7 @@ fan.status = () => {
     return s.dirty ? (s.external ? "CONFLICT · external file changed; edits kept" : "Unsaved")
                    : (s.external ? "External change · reopen in the fan to reload" : "Saved");
 };
-fan.publish = () => pinned.status(fan.state.status, !!fan.state.dirty);
+fan.publish = () => pinned.status(fan.state.status, !!fan.state.dirty, !!fan.state.dirty);
 
 /** Every keystroke reaches the engine, which owns the 250 ms debounce and the recovery
  *  journal. Identical to the fan's autosave seam: a pinned note must not have weaker
@@ -197,9 +200,58 @@ fan.poll = async () => {
     fan.publish();
 };
 
+/** Reload is explicit and only clean, exactly as in the deck: a dirty buffer and its
+ *  undo history are never silently replaced. */
+fan.reload = async () => {
+    const s = fan.state;
+    if (!s || !s.loaded || s.busy) return;
+    if (s.dirty) { s.status = "CONFLICT · reload refused: copy edits first; buffer kept"; fan.publish(); return; }
+    const before = fan.editors[0].getValue();
+    s.busy = true;
+    const r = await fan.call("loadNote", noteId);
+    if (s.dirty || fan.editors[0].getValue() !== before) {
+        s.busy = false; s.dirty = true; s.status = "CONFLICT · edited during reload; buffer kept";
+        fan.publish(); fan.changed(); return;
+    }
+    if (r.ok) {
+        s.loaded = false;
+        fan.editors[0].setValue(r.text);
+        s.revision = r.revision; s.baseline = fan.editors[0].getValue(); s.loaded = true;
+        s.pushed = undefined; s.lastAcknowledgedPush = undefined;
+        fan.frames[0].contentDocument.getElementById("editor").inert = false;
+        s.external = false; s.dirty = false; s.status = fan.status();
+    } else s.status = r.error;
+    s.busy = false; fan.publish();
+};
+
+/** Explicit rename, refused while the buffer is dirty or busy so it never races a save.
+ *  The native side repeats the revision check and every name rule. */
+fan.renameActive = async title => {
+    const s = fan.state;
+    if (!s || !s.loaded || s.busy) { if (s) { s.status = "Rename refused · note is not ready"; fan.publish(); } return {ok: false}; }
+    fan.changed();
+    if (s.dirty) { s.status = "Rename refused · save or reload this note first"; fan.publish(); return {ok: false}; }
+    const r = await fan.call("renameNote", noteId, title, s.revision);
+    if (r.ok) { s.revision = r.revision || s.revision; s.status = fan.status(); }
+    else s.status = r.error;
+    fan.publish();
+    return r;
+};
+
 fan.remember = () => {};
 fan.suspend = () => { fan.frames[0]?.contentDocument.activeElement?.blur(); };
 fan.select = () => { fan.frames[0]?.contentWindow.focus(); fan.editors[0]?.focus(); };
+fan.focusSlot = () => fan.select();
+fan.swatchColorOf = () => ({paper: fan.own && fan.own.paper ? String(fan.own.paper) : "#f5f0e6",
+                            ink: fan.own && fan.own.ink ? String(fan.own.ink) : "#1b1b1f"});
+fan.fontOf = () => ({family: fan.own && fan.own.fontFamily ? String(fan.own.fontFamily) : "",
+                     size: fan.own && fan.own.fontSize > 0 ? Number(fan.own.fontSize) : 0});
+fan.setNoteFont = async (id, family, size) => {
+    const r = await fan.call("setNoteFont", id, family, size);
+    if (r.ok) await fan.recolour();
+    else { fan.state.status = r.error; fan.publish(); }
+    return r;
+};
 fan.formattingVisible = () =>
     fan.frames[0].contentDocument.documentElement.classList.contains("formatting");
 fan.toggleFormatting = () => {
@@ -218,31 +270,27 @@ fan.onReady = (index, editor) => {
     if (fan.resolveReady) { const done = fan.resolveReady; fan.resolveReady = null; done(); }
 };
 
-/** editor.js calls parent.notes.collapse() on Escape. In a pinned window the equivalent
- *  gesture is closing the window, which returns the note to the fan and never deletes. */
-window.notes = {collapse: () => pinned.closeWindow()};
-
-/** Paint the note's own paper and ink, and the global typography, exactly as the deck
- *  does — the same CSS custom properties editor-theme.css already reads. */
-fan.applyColours = record => {
-    const style = fan.frames[0]?.contentDocument.documentElement.style;
-    if (!style || !record) return;
-    Object.entries(record).forEach(([k, v]) => style.setProperty("--" + k, v));
-};
 
 new QWebChannel(qt.webChannelTransport, async channel => {
-    pinned = window.pinnedBridge = channel.objects.pinned;
+    // The bridge is also `notes` to editor.js and editor-assets.js: Escape collapses
+    // (returns the note to the fan), status and the recording-name prompt go through it.
+    pinned = window.pinnedBridge = window.notes = channel.objects.pinned;
     // Progress is reported through the BRIDGE, not console.log: WebEngine console output
     // from this window does not reach the application log, so a failure inside this
     // callback is otherwise completely silent.
-    pinned.status("loading", false);
+    pinned.status("loading", false, false);
     const r = await fan.call("loadNote", noteId);
-    if (!r || !r.ok) { pinned.status("load failed: " + (r && r.error ? r.error : "no result"), false); return; }
-    pinned.status("loaded " + (r.text ? r.text.length : 0) + " chars", false);
-    fan.state = {loaded: false, dirty: false, busy: false, external: false,
+    if (!r || !r.ok) { pinned.status("load failed: " + (r && r.error ? r.error : "no result"), false, false); return; }
+    pinned.status("loaded " + (r.text ? r.text.length : 0) + " chars", false, false);
+    fan.state = {id: noteId, loaded: false, dirty: false, busy: false, external: false,
                  revision: r.ok ? r.revision : "", baseline: "",
                  status: r.ok ? "Saved" : r.error};
+    fan.states = [fan.state];
     fixtures[0] = r.ok ? r.text : "";
+    // Relative asset links resolve against the notes folder, as in the deck. Must be set
+    // before the editor frame is built; it reads this when constructing its editor.
+    const root = await fan.call("libraryPath");
+    fan.linkBase = root ? ("file://" + String(root).replace(/\/*$/, "/")) : "";
     await new Promise(resolve => {
         // Resolve on Vditor's OWN ready callback (editor.js calls parent.fan.onReady),
         // never on the iframe's `load` event. `load` fires when the document is parsed,
@@ -256,7 +304,9 @@ new QWebChannel(qt.webChannelTransport, async channel => {
         frame.src = "editor.html?note=0";
         document.body.append(frame);
     });
-    fan.applyColours(await fan.call("colours", noteId));
+    fan.own = await fan.call("colours", noteId);
+    fan.manifest = await fan.call("manifest");
+    await appearance.init();
     fan.select();
     setInterval(fan.poll, 1000);
 });
@@ -267,5 +317,7 @@ new QWebChannel(qt.webChannelTransport, async channel => {
  *  it is closed and reopened. Appearance only — text, caret and undo are untouched. */
 fan.recolour = async () => {
     if (!pinned) return;
-    fan.applyColours(await fan.call("colours", noteId));
+    fan.own = await fan.call("colours", noteId);
+    fan.manifest = await fan.call("manifest");
+    window.appearance && appearance.apply();
 };

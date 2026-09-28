@@ -66,21 +66,23 @@ PlasmaCore.Dialog {
         }
         iconPanelOpen = opening
     }
-    function setIconDestination(which) {
+    function setIconDestination(which) { dialog.setIconDestinationOn(dialog, which) }
+    /** The destination toggles of one card's icon panel — the fan's or a pinned window's. */
+    function setIconDestinationOn(host, which) {
         if (which === "inline") {
             // A layout modifier on "Into note", not a destination of its own: ticking it
             // implies the icon is going into the note at all.
-            iconInline = !iconInline
-            if (iconInline) iconToNote = true
+            host.iconInline = !host.iconInline
+            if (host.iconInline) host.iconToNote = true
             return
         }
         if (which === "tab") {
-            iconToTab = !iconToTab
-            if (!iconToTab && !iconToNote) iconToNote = true
+            host.iconToTab = !host.iconToTab
+            if (!host.iconToTab && !host.iconToNote) host.iconToNote = true
         } else {
-            iconToNote = !iconToNote
-            if (!iconToNote) iconInline = false
-            if (!iconToTab && !iconToNote) iconToTab = true
+            host.iconToNote = !host.iconToNote
+            if (!host.iconToNote) host.iconInline = false
+            if (!host.iconToTab && !host.iconToNote) host.iconToTab = true
         }
     }
     /** Rebuild the offered icons: ONE searchable list, not segmented into group tabs —
@@ -114,16 +116,18 @@ PlasmaCore.Dialog {
     /** Apply a picked icon to the chosen destinations. The tab icon is stored in the
      *  manifest; a note icon is rendered to a PNG under Assets/icons/ and appended as an
      *  image link, so the note stays a portable .md whose links resolve in the library. */
-    function applyIcon(entry) {
+    function applyIcon(entry) { dialog.applyIconOn(dialog, loader.item, entry) }
+    /** @param host the card whose panel was used; @param view that card's editor page. */
+    function applyIconOn(host, view, entry) {
         const rel = String(entry.relative || "")
-        if (dialog.iconToTab) dialog.setNoteIcon(rel)
-        if (dialog.iconToNote && loader.item) {
+        if (host.iconToTab) host.setNoteIcon(rel)
+        if (host.iconToNote && view) {
             const r = shellControl.exportIconForNote(rel, String(entry.name || "icon"))
             if (r && r.ok) {
-                loader.item.runJavaScript(
+                view.runJavaScript(
                     "fan.appendImage(fan.active," + JSON.stringify(String(r.relative))
                     + "," + JSON.stringify(String(entry.name || "icon"))
-                    + "," + (dialog.iconInline ? "true" : "false") + ")")
+                    + "," + (host.iconInline ? "true" : "false") + ")")
             }
         }
     }
@@ -215,6 +219,18 @@ PlasmaCore.Dialog {
     property bool showInfo: false
     /** Library panel (browse + restore from Archive) visibility. */
     property bool libraryOpen: false
+    /** What the shared card (NoteCard.qml) reads for the fan's open note. */
+    readonly property string cardTitle: dialog.titles[dialog.selectedId] || ""
+    readonly property string closeExplanation: "Collapse · Esc"
+    function toggleFormatting() {
+        dialog.paletteOpen = false; dialog.showInfo = false
+        if(loader.item) loader.item.runJavaScript("fan.toggleFormatting()")
+    }
+    function toggleSettings() {
+        dialog.paletteOpen = false; dialog.showInfo = false
+        if(loader.item) loader.item.runJavaScript("appearance.toggle()")
+    }
+    function reloadNote() { if(loader.item) loader.item.runJavaScript("fan.reload(fan.active)") }
     /** Notes currently held in their own pinned window, by stable id. */
     property var pinnedIds: []
     readonly property bool selectedIsPinned: dialog.pinnedIds.indexOf(dialog.selectedId) >= 0
@@ -296,8 +312,11 @@ PlasmaCore.Dialog {
      *  selection change or a save: a stale mtime would be worse than no panel. */
     function refreshInfo() {
         if(!showInfo) { infoRows = []; return }
-        var r = store.info(dialog.selectedId)
-        infoData = r
+        infoData = store.info(dialog.selectedId)
+        infoRows = dialog.infoRowsFor(infoData, dialog.selectedDirty)
+    }
+    /** The File details rows for one note's native facts and its own buffer state. */
+    function infoRowsFor(r, bufferDirty) {
         var rows = []
         if(r && r.ok) {
             rows.push({label:"Name", value:r.filename})
@@ -306,7 +325,7 @@ PlasmaCore.Dialog {
             rows.push({label:"Modified", value:r.modified})
             // Derived from the FILE, not the editor: `matchesLoaded` compares the current
             // on-disk digest with the revision the store last handed this note.
-            rows.push({label:"Status", value: dialog.selectedDirty
+            rows.push({label:"Status", value: bufferDirty
                 ? "Unsaved · buffer differs from this file"
                 : (r.matchesLoaded ? "Saved · matches this file"
                                    : "External change · this file differs from the copy loaded")})
@@ -317,7 +336,7 @@ PlasmaCore.Dialog {
         // autosave after a 250 ms quiet period and a killed process recovers its buffer
         // from the journal. This is the one panel consulted to find out what is safe.
         rows.push({label:"Saving", value:"Autosaves after a brief pause · Ctrl+S saves immediately · recovers after a crash"})
-        infoRows = rows
+        return rows
     }
     /** Toggle File details. Mutually exclusive with Settings, the colour panel and the
      *  formatting disclosure, exactly like those are with each other. */
@@ -482,7 +501,7 @@ PlasmaCore.Dialog {
         if(value.openFolder !== undefined) dialog.openFolder = value.openFolder
         dialog.activePalette = value.activePalette
         dialog.inkModes = value.inkMode; dialog.inkStored = value.inkStored
-        titleField.reset()
+        noteCard.resetTitle()
         return value
     }
     // Keep the same dock and editor objects alive through collapse, reorder and rename.
@@ -492,7 +511,7 @@ PlasmaCore.Dialog {
     function openNote(index, activate) {
         ensureFanIndexVisible(index)
         selected = index; expanded = true; loaded = true
-        titleField.reset()
+        noteCard.resetTitle()
         if(activate !== false) dialog.requestActivate()
         if(loader.item) loader.item.resume(index)
         alignment.restart()
@@ -1022,17 +1041,7 @@ PlasmaCore.Dialog {
     property bool swatchKeyboardCue: false
     /** Move swatch focus by `step` and say so with the keyboard cue. Order matches the
      *  painted Flow: the Auto chip first in ink mode, then every palette dot. */
-    function moveSwatchFocus(step) {
-        var chain = []
-        if(swatchPop.autoDot.visible) chain.push(swatchPop.autoDot)
-        for(var i=0;i<swatchPop.swatchRepeater.count;i++) { var d=swatchPop.swatchRepeater.itemAt(i); if(d) chain.push(d) }
-        if(!chain.length) return
-        var at = -1
-        for(var j=0;j<chain.length;j++) if(chain[j].activeFocus) { at = j; break }
-        var next = at < 0 ? 0 : (at + step + chain.length) % chain.length
-        dialog.swatchKeyboardCue = true
-        chain[next].forceActiveFocus(Qt.TabFocusReason)
-    }
+    function moveSwatchFocus(step) { noteCard.moveSwatchFocus(step) }
     /** Toggle the in-card colour panel. Opening it closes the formatting disclosure so
      *  the two never occupy the same strip above the footer. */
     function togglePalette(mode) {
@@ -1044,24 +1053,10 @@ PlasmaCore.Dialog {
         if(opening && loader.item) loader.item.runJavaScript("if(appearance.open) appearance.toggle(false); if(fan.formattingVisible()) fan.toggleFormatting()")
         paletteMode = wanted
         paletteOpen = opening
-        // The WebEngine child otherwise retains keyboard focus and consumes Escape before
-        // QML's ancestor key handler sees it. Focusing a real swatch also makes keyboard
-        // navigation visible without changing editor state.
-        //
-        // Focus lands on the swatch this note ALREADY has whenever the panel offers it, so the
-        // focus ring and selection mark start on the same dot; two lit dots read as two active
-        // choices. The scan covers the Auto chip as well as the palette dots, in the order the
-        // Flow paints them, so the fallback is the FIRST painted circle.
+        // Focus lands on the note's current swatch so Escape and arrows reach QML rather
+        // than the WebEngine child (NoteCard.focusCurrentSwatch).
         dialog.swatchKeyboardCue = false
-        if(opening) {
-            var chain = []
-            if(paletteMode === "ink") chain.push(swatchPop.autoDot)
-            for(var i=0;i<swatchPop.swatchRepeater.count;i++) { var dot = swatchPop.swatchRepeater.itemAt(i); if(dot) chain.push(dot) }
-            var target = null
-            for(var j=0;j<chain.length;j++) if(chain[j].selected) { target = chain[j]; break }
-            if(!target && chain.length) target = chain[0]
-            if(target) target.forceActiveFocus(Qt.PopupFocusReason)
-        }
+        if(opening) noteCard.focusCurrentSwatch()
     }
     /** Re-read the native colours into the resident editor CSS. Appearance only: it never
      *  replaces editor text, undo history or caret. One place, so every colour entry
@@ -1218,6 +1213,22 @@ PlasmaCore.Dialog {
             }
         })
     }
+    /** A pinned window's close gate has committed the note natively; now do what it was
+     *  closed FOR. A refused filing leaves the window open with the reason on its card. */
+    function finishPinnedClose(id, intent) {
+        if(intent === "archive" || intent === "trash") {
+            var filed = intent === "archive" ? collection.archive(id) : collection.moveToTrash(id)
+            if(!filed) {
+                var reason = (intent === "archive" ? "Archive refused · " : "Trash refused · ") + collection.lastError
+                for(var i=0;i<pinnedWindows.count;i++) {
+                    var w = pinnedWindows.objectAt(i)
+                    if(w && w.documentId === id) w.status = reason
+                }
+                return
+            }
+        }
+        unpinNote(id)
+    }
     function unpinNote(id) {
         // Clearing the pin is enough — the note returns to the fan whenever its folder is
         // the open one, in the slot this folder's persisted order kept for it.
@@ -1294,15 +1305,6 @@ PlasmaCore.Dialog {
          * strip and, while a card is open, the card itself; expanded state masks everything,
          * because the outside-click catcher needs those presses. */
         focus: true
-        property bool titleDirty: titleField.text !== titleField.committed
-        /** The one button-box rule, shared by BOTH command palettes.
-         *
-         * `iconSize + 12` is 6 px of padding on every side of the glyph; `actionGap` is the
-         * row's spacing. The editor's format toolbar reads these same two numbers as CSS vars
-         * (`--actionsize` / `--actiongap` in appearance.js), so Buttons → Size moves both
-         * strips identically rather than only the glyph inside one of them. */
-        property real actionSize: dialog.appearance.iconSize + 12
-        property real actionGap: 2
         // Escape dismisses whichever panel is over the card first — colour, then File
         // details — and collapses the note only when none is open, so closing a panel never
         // also closes the note. It never touches the caret, the buffer or the undo stack.
@@ -1336,255 +1338,20 @@ PlasmaCore.Dialog {
             sequence: "Ctrl+F"
             onActivated: dialog.showSearch(false)
         }
-        // The WebEngine rectangle stays inside the paper rounded perimeter at every bound.
-        Rectangle {
-            id: paper
-            y: surface.cardTop
-            width: dialog.cardWidth; height: dialog.cardHeight
-            radius: dialog.appearance.radius; color: dialog.paperColor; visible: dialog.expanded
-            Item {
-                id: titleSpine; width: 40; height: parent.height
-                Accessible.role: Accessible.StaticText
-                Accessible.name: "Note spine, left edge · " + dialog.titles[dialog.selectedId]
-                Rectangle { width: 80; height: parent.height; radius: paper.radius; color: Qt.darker(paper.color,1.14) }
-            }
-            Rectangle { x:40; width:40; height:parent.height; color:paper.color }
-            Text { x:20-width/2; y:(parent.height-height)/2; width:parent.height-40; rotation:-90; horizontalAlignment:Text.AlignHCenter; elide:Text.ElideRight; text:(dialog.titles[dialog.selectedId] || "").toUpperCase(); color:dialog.ink; font.family:dialog.noteFont; font.pixelSize:10; font.weight:Font.DemiBold }
-            Repeater { model:Math.max(0,Math.floor((paper.height-28)/11)); Rectangle { required property int index; x:40; y:14+index*11; width:2; height:6; radius:1; color:Qt.darker(paper.color,1.34) } }
-
-            // Editable title with explicit apply and cancel: nothing is renamed while typing.
-            TextField {
-                id: titleField
-                objectName: "note-title"
-                property string committed: ""
-                function reset() { committed = dialog.titles[dialog.selectedId] || ""; text = committed }
-                x: 56; y: 10; height: 28
-                width: Math.max(60, applyTitle.x - 64)
-                color: dialog.ink
-                font.family: dialog.noteFont; font.pixelSize: 15; font.weight: Font.DemiBold
-                selectByMouse: true
-                leftPadding: 4; rightPadding: 4; topPadding: 2; bottomPadding: 2
-                Accessible.name: "Note title; apply or cancel explicitly"
-                background: Rectangle { color: "transparent"; radius: 4; border.width: titleField.activeFocus ? 1 : 0; border.color: Qt.darker(dialog.paperColor,1.35) }
-                onAccepted: dialog.applyTitle()
-                Keys.onEscapePressed: { titleField.reset(); surface.forceActiveFocus() }
-                Component.onCompleted: reset()
-            }
-            QuietButton {
-                id: applyTitle; objectName: "apply-title"
-                x: cancelTitle.x - surface.actionSize - 2; y: 10
-                size: surface.actionSize; iconSize: dialog.appearance.iconSize
-                visible: surface.titleDirty; enabled: visible
-                glyph: "dialog-ok"; ink: dialog.ink
-                explanation: "Rename file"
-                onClicked: dialog.applyTitle()
-            }
-            QuietButton {
-                id: cancelTitle; objectName: "cancel-title"
-                x: closeButton.x - surface.actionSize - 6; y: 10
-                size: surface.actionSize; iconSize: dialog.appearance.iconSize
-                visible: surface.titleDirty; enabled: visible
-                glyph: "dialog-cancel"; ink: dialog.ink
-                explanation: "Cancel title edit"
-                onClicked: { titleField.reset(); surface.forceActiveFocus() }
-            }
-            // Pin sits beside the close control: both answer "where does this note LIVE",
-            // which is a different question from the footer's editing verbs.
-            QuietButton {
-                objectName: "pin"
-                x: paper.width - 22 - 12 - 30; y: 10
-                size: 22; iconSize: 14
-                glyph: dialog.selectedIsPinned ? "window-unpin" : "window-pin"
-                ink: dialog.ink
-                explanation: dialog.selectedIsPinned ? "Return this note to the fan" : "Pin this note to its own window"
-                onClicked: dialog.togglePinSelected()
-            }
-            QuietButton {
-                id: closeButton; objectName: "collapse"
-                // Fixed 22 px: the retired closeSize setting drove nothing worth tuning,
-                // and a stored legacy value is simply ignored.
-                x: paper.width - 22 - 12; y: 10
-                size: 22; iconSize: 14
-                glyph: "window-close"; ink: dialog.ink
-                explanation: "Collapse · Esc"
-                onClicked: dialog.collapse()
-            }
-
-            // Every action and the status live in the footer; only title and collapse are on top.
-            Item {
-                id: footer
-                x: 50; y: paper.height - surface.actionSize - 10
-                width: paper.width - 62; height: surface.actionSize
-                Row {
-                    id: footerActions; spacing: surface.actionGap
-                    // The two disclosures are mutually exclusive, so the card never stacks
-                    // two panels above the footer.
-                    QuietButton { objectName:"format"; size:surface.actionSize; iconSize:dialog.appearance.iconSize; glyph:"format-text-bold"; ink:dialog.ink; explanation:"Formatting"; onClicked: { dialog.paletteOpen=false; dialog.showInfo=false; if(loader.item) loader.item.runJavaScript("fan.toggleFormatting()") } }
-                    // Paper and Ink are SEPARATE controls onto the SAME compact panel: the
-                    // same button again dismisses it, the other switches its mode in place.
-                    QuietButton { id: colorButton; objectName:"swatch"; size:surface.actionSize; iconSize:dialog.appearance.iconSize; swatch:dialog.paperColor; ink:dialog.ink; explanation:"Note paper"; onClicked: dialog.togglePalette("paper") }
-                    QuietButton { id: inkButton; objectName:"ink"; size:surface.actionSize; iconSize:dialog.appearance.iconSize; swatch:dialog.ink; ink:dialog.ink; explanation:"Note ink"; onClicked: dialog.togglePalette("ink") }
-                    QuietButton { objectName:"reload"; size:surface.actionSize; iconSize:dialog.appearance.iconSize; glyph:"view-refresh"; ink:dialog.ink; explanation:"Reload · saved notes only"; onClicked: if(loader.item) loader.item.runJavaScript("fan.reload(fan.active)") }
-                    QuietButton { objectName:"library"; size:surface.actionSize; iconSize:dialog.appearance.iconSize; glyph:"view-list-tree"; ink:dialog.ink; explanation:"Library · browse and restore from Archive"; onClicked: dialog.toggleLibrary() }
-                    QuietButton { id: iconButton; objectName:"icon"; size:surface.actionSize; iconSize:dialog.appearance.iconSize; glyph:"preferences-desktop-emoticons-symbolic"; ink:dialog.ink; explanation:"Note icon · tab and/or note body"; onClicked: dialog.toggleIconPanel() }
-                    QuietButton { objectName:"settings"; size:surface.actionSize; iconSize:dialog.appearance.iconSize; glyph:"configure"; ink:dialog.ink; explanation:"Settings"; onClicked: { dialog.paletteOpen=false; dialog.showInfo=false; if(loader.item) loader.item.runJavaScript("appearance.toggle()") } }
-                    QuietButton { id: infoButton; objectName:"trial"; size:surface.actionSize; iconSize:dialog.appearance.iconSize; glyph:"help-about"; ink:dialog.ink; explanation:"File details"; onClicked: dialog.toggleInfo() }
-                }
-                // ---- Filing group ------------------------------------------------------
-                // Archive and Trash are the only two controls that move the user's file. The
-                // protection is the interlock, not the layout: each ARMS on the first press
-                // and acts only on the second (see confirmArchiveId / confirmTrashId).
-                Row {
-                    id: filingActions
-                    objectName: "filing-actions"
-                    x: footerActions.width + surface.actionGap
-                    spacing: surface.actionGap
-                    QuietButton {
-                        objectName: "archive"
-                        size: surface.actionSize; iconSize: dialog.appearance.iconSize
-                        glyph: dialog.confirmArchiveId === dialog.selectedId && dialog.selectedId !== ""
-                            ? "dialog-ok" : "archive-insert"
-                        ink: dialog.ink
-                        explanation: dialog.confirmArchiveId === dialog.selectedId && dialog.selectedId !== ""
-                            ? "Confirm · move this note to Archive"
-                            : "Archive this note · press twice"
-                        onClicked: {
-                            if(dialog.confirmArchiveId === dialog.selectedId && dialog.selectedId !== "") dialog.archiveSelected()
-                            else dialog.armArchive()
-                        }
-                    }
-                    QuietButton {
-                        objectName: "trash"
-                        size: surface.actionSize; iconSize: dialog.appearance.iconSize
-                        glyph: dialog.confirmTrashId === dialog.selectedId && dialog.selectedId !== ""
-                            ? "dialog-ok" : "user-trash"
-                        ink: dialog.ink
-                        explanation: dialog.confirmTrashId === dialog.selectedId && dialog.selectedId !== ""
-                            ? "Confirm · move this note to the desktop Trash"
-                            : "Move this note to the desktop Trash · press twice"
-                        onClicked: {
-                            if(dialog.confirmTrashId === dialog.selectedId && dialog.selectedId !== "") dialog.trashSelected()
-                            else dialog.armTrash()
-                        }
-                    }
-                }
-                Text {
-                    id: statusText
-                    x: filingActions.x + filingActions.width + 10; width: Math.max(40, quitButton.x - x - 8)
-                    anchors.verticalCenter: parent.verticalCenter
-                    elide: Text.ElideRight; text: dialog.saveStatus; color: dialog.ink
-                    font.family: dialog.noteFont; font.pixelSize: 10
-                    // The status line can elide in a narrow card; the accessible name is
-                    // always the whole sentence.
-                    Accessible.role: Accessible.StaticText
-                    Accessible.name: dialog.saveStatus
-                }
-                QuietButton {
-                    id: quitButton; objectName: "quit"
-                    x: footer.width - surface.actionSize; size: surface.actionSize; iconSize: dialog.appearance.iconSize
-                    glyph: dialog.confirmQuit ? "dialog-ok" : "system-shutdown"; ink: dialog.ink
-                    explanation: dialog.confirmQuit ? "Confirm · quit Fan Fold"
-                                                    : "Quit Fan Fold · press twice"
-                    onClicked: {
-                        if(dialog.confirmQuit) dialog.requestClose()
-                        else dialog.armQuit()
-                    }
-                }
-            }
-
+        // The card is shared with pinned windows (NoteCard.qml). Its panel layer sits over
+        // the deck and the editor; the Library (z 401) stays above it.
+        NoteCard {
+            id: noteCard
+            anchors.fill: parent
+            host: dialog
+            bridge: bridge
+            overlayParent: surface
+            focusTarget: surface
+            cardTop: surface.cardTop
         }
         Loader {
-            id: loader; x: 42; y: surface.cardTop+46; width: dialog.cardWidth-58; height: dialog.cardHeight-46-surface.actionSize-16
-            active: dialog.loaded; visible: dialog.expanded; sourceComponent: editorComponent
-        }
-        RecordingPrompt {
-            id: recordingPrompt
-            dialog: dialog
-            surface: surface
-            bridge: bridge
-        }
-        // Outside-click dismissal. It sits just under the panel and over everything else,
-        // including the WebEngine view, because a press inside the web content is consumed
-        // there and would never reach QML. The WHOLE footer strip is excluded: excluding only
-        // the routine row silently swallows every press on Archive, Trash and Quit.
-        MouseArea {
-            id: paletteDismiss; objectName: "palette-dismiss"
-            anchors.fill: parent; z: 299
-            visible: (dialog.paletteOpen || dialog.showInfo || dialog.iconPanelOpen) && dialog.expanded; enabled: visible
-            acceptedButtons: Qt.AllButtons
-            onPressed: function(mouse) {
-                var p = mapToItem(footer, mouse.x, mouse.y)
-                if(p.x>=0 && p.y>=0 && p.x<=footer.width && p.y<=footer.height) {
-                    // Every footer control keeps its own press. The three panel toggles keep
-                    // their toggle semantics; everything else acts normally and ALSO
-                    // dismisses, because acting while an obsolete panel hangs open reads as
-                    // broken.
-                    var c = mapToItem(colorButton, mouse.x, mouse.y)
-                    var k = mapToItem(inkButton, mouse.x, mouse.y)
-                    var f = mapToItem(infoButton, mouse.x, mouse.y)
-                    var g = mapToItem(iconButton, mouse.x, mouse.y)
-                    var onPanelButton = (c.x>=0 && c.y>=0 && c.x<=colorButton.width && c.y<=colorButton.height)
-                                     || (k.x>=0 && k.y>=0 && k.x<=inkButton.width && k.y<=inkButton.height)
-                                     || (f.x>=0 && f.y>=0 && f.x<=infoButton.width && f.y<=infoButton.height)
-                                     || (g.x>=0 && g.y>=0 && g.x<=iconButton.width && g.y<=iconButton.height)
-                    if(!onPanelButton) { dialog.paletteOpen=false; dialog.showInfo=false; dialog.iconPanelOpen=false }
-                    mouse.accepted=false; return
-                }
-                dialog.paletteOpen=false; dialog.showInfo=false; dialog.iconPanelOpen=false; mouse.accepted=true
-            }
-        }
-        // Compact circular swatches of the palette currently offering choices, in-card and
-        // immediately above the footer. A swatch assigns its literal colour to the SELECTED
-        // note only, and carries an accessible name rather than a tooltip. A sibling of the
-        // WebEngine Loader (not nested under paper) and declared after it, so its z-order is
-        // compared against the loader.
-        SwatchPopup {
-            id: swatchPop
-            dialog: dialog
-            surface: surface
-            paper: paper
-            footer: footer
-        }
-        // Compact, READ-ONLY File details for the selected note.
-        //
-        // Every fact comes from the native filestore for a STABLE note ID — the store's own
-        // anchored directory descriptor — not from the editor's buffer length, so "23 bytes on
-        // disk" stays 23 while the buffer holds something longer and the mismatch is stated
-        // rather than hidden. No folder action, no recovery verb, no path entry and no new
-        // filesystem privilege: symlinks are refused and the path is composed from the store's
-        // canonical root.
-        Rectangle {
-            id: infoPanel; objectName: "file-info"
-            visible: dialog.showInfo && dialog.expanded; z:400
-            x:58; y:surface.cardTop+50; width:Math.min(360, dialog.cardWidth-84)
-            height: infoColumn.implicitHeight + 20; radius:8
-            color: Qt.lighter(dialog.paperColor,1.04); border.width:1; border.color: Qt.darker(dialog.paperColor,1.3)
-            Accessible.role: Accessible.Grouping
-            Accessible.name: "File details for " + dialog.titles[dialog.selectedId]
-            Column {
-                id: infoColumn
-                x:10; y:10; width: parent.width-20; spacing:3
-                Text { text:"File details"; font.family:dialog.noteFont; font.pixelSize:11
-                       font.weight:Font.DemiBold; color:dialog.ink }
-                Repeater {
-                    model: dialog.infoRows
-                    delegate: Text {
-                        required property var modelData
-                        objectName: "file-info-row"
-                        width: infoColumn.width; elide: Text.ElideMiddle
-                        font.family:dialog.noteFont; font.pixelSize:10; color:dialog.ink
-                        text: modelData.label + ": " + modelData.value
-                        Accessible.role: Accessible.StaticText
-                        Accessible.name: modelData.label + ", " + modelData.value
-                    }
-                }
-            }
-        }
-
-        IconPanel {
-            id: iconPanel
-            dialog: dialog
-            surface: surface
+            id: loader; parent: noteCard.editorArea; anchors.fill: parent
+            active: dialog.loaded; sourceComponent: editorComponent
         }
         // The compact edge target. It spans the lane the deck occupies when SPREAD, so its own
         // geometry never changes as the deck opens under the pointer: entering it cannot move
@@ -1658,7 +1425,7 @@ PlasmaCore.Dialog {
             // layout its translated y can transiently make the cap negative, and a naive
             // Math.min then pins the panel to its 140 px floor permanently.
             readonly property int libraryCap:
-                LayoutContract.libraryPanelCap(paper.y, footer.y, y, 140, 12)
+                LayoutContract.libraryPanelCap(noteCard.paperItem.y, noteCard.footerItem.y, y, 140, 12)
             height: Math.max(140, Math.min(libraryModel.count * libraryRowPitch + libraryChrome,
                                            libraryCap))
             radius: 8
@@ -2453,7 +2220,7 @@ PlasmaCore.Dialog {
     /** Explicit title apply: the web layer re-checks dirty state before any rename. */
     function applyTitle() {
         if(!loader.item) return
-        loader.item.runJavaScript("fan.renameActive(" + JSON.stringify(titleField.text) + ")")
+        loader.item.runJavaScript("fan.renameActive(" + JSON.stringify(noteCard.titleText) + ")")
     }
     /** @return one item rectangle in surface coordinates for layout assertions. */
     function rectOf(item) {
@@ -2550,7 +2317,7 @@ PlasmaCore.Dialog {
          *  `recordingName` to change: "" while open, the chosen name on save, "\u0000" on
          *  discard (an empty answer and a cancelled one must be distinguishable). */
         property string recordingName: ""
-        function beginRecordingName() { recordingPrompt.open("Name this recording") }
+        function beginRecordingName() { noteCard.openRecordingPrompt("Name this recording") }
         /** Read-only file facts from the native filestore, for a stable note ID only. */
         function noteInfo(id) { return store.info(id) }
         /** The families this machine's Qt/OS font stack actually reports, sorted and
@@ -2574,18 +2341,10 @@ PlasmaCore.Dialog {
         model: dialog.pinnedIds
         delegate: PinnedNoteWindow {
             required property string modelData
-            // THIS note's own colours, by id, through the same adapter the web layer uses.
-            // Reading dialog.papers/inks instead uses maps keyed by FAN membership, which a
-            // pinned note has left, so the fallback paints header and footer in the SELECTED
-            // note's colour over the pinned note's own body.
-            readonly property var ownColours: notesStore.colourOf(modelData)
             documentId: modelData
             record: collection.documentObject(modelData)
-            paper: ownColours && ownColours.paper ? ownColours.paper : "#f5f0e6"
-            ink: ownColours && ownColours.ink ? ownColours.ink : "#1b1b1f"
-            noteFont: dialog.noteFont
-            iconSize: dialog.appearance.iconSize
-            onCloseRequested: function(id) { dialog.unpinNote(id) }
+            fan: dialog
+            onCloseRequested: function(id) { dialog.finishPinnedClose(id, closeIntent) }
         }
     }
     property Component editorFactory: Component {

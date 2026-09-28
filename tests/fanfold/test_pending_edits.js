@@ -479,12 +479,38 @@ async function discardPromptFlushesOtherNativeNotes() {
     }
     assert.equal(exits, 4);
 }
+/** A pinned window is the SAME card as the fan's, acting on its own note only. Filing
+ *  from it goes through the close gate, so a file never moves under an unacknowledged push. */
+function pinnedWindowIsTheSharedCard() {
+    const pinned = fs.readFileSync(path.join(qml, 'PinnedNoteWindow.qml'), 'utf8');
+    const main = fs.readFileSync(path.join(qml, 'Main.qml'), 'utf8');
+    assert.match(pinned, /NoteCard \{[\s\S]*?host: pinnedWindow/);
+    assert.match(main, /NoteCard \{[\s\S]*?host: dialog/);
+    assert.match(pinned, /readonly property string selectedId: documentId/);
+    assert.match(pinned, /function archiveSelected\(\) \{[^\n]*requestSafeClose\("archive"\)/);
+    assert.match(pinned, /function trashSelected\(\) \{[^\n]*requestSafeClose\("trash"\)/);
+    assert.match(pinned, /Qt\.WindowStaysOnTopHint/);
+    const finish = main.match(/function finishPinnedClose\(id, intent\) \{([\s\S]*?)\n    \}/);
+    assert.ok(finish, 'the fan must own what a pinned close gate does next');
+    const calls = [];
+    const collection = {lastError: 'denied', archive(id) { calls.push('archive:' + id); return false; },
+                        moveToTrash(id) { calls.push('trash:' + id); return true; }};
+    const window = {documentId: 'n1', status: ''};
+    const pinnedWindows = {count: 1, objectAt: () => window};
+    const ctx = vm.createContext({collection, pinnedWindows, unpinNote: id => calls.push('unpin:' + id)});
+    const run = vm.runInContext(`(function(id, intent) {${finish[1]}})`, ctx);
+    run('n1', 'archive');
+    assert.deepEqual(calls, ['archive:n1'], 'a refused archive must keep the note pinned');
+    assert.match(window.status, /Archive refused · denied/);
+    run('n1', 'trash');
+    assert.deepEqual(calls.slice(1), ['trash:n1', 'unpin:n1']);
+}
 async function pinnedQmlRefusesUncommittedNativeMarkdown(
     record = {saveError: 'Atomic autosave staging failed: Permission denied'},
     expectedError = /Atomic autosave staging failed/
 ) {
     const source = fs.readFileSync(path.join(qml, 'PinnedNoteWindow.qml'), 'utf8');
-    const method = source.match(/function requestSafeClose\(\) \{([\s\S]*?)\n    \}/);
+    const method = source.match(/function requestSafeClose\(intent\) \{([\s\S]*?)\n    \}/);
     assert.ok(method);
     const {fan, context: js} = load('pinned.js');
     let value = 'new', disk = 'old', closeCount = 0, saves = 0;
@@ -515,7 +541,7 @@ async function pinnedQmlRefusesUncommittedNativeMarkdown(
     assert.ok(timer, 'the close acknowledgment must be polled as a primitive');
     const qmlContext = vm.createContext({pinnedWindow, collection, pinnedEditor, closePoll, closeDeadline});
     closePoll.onTriggered = vm.runInContext(`(function() {${timer[1]}})`, qmlContext);
-    pinnedWindow.requestSafeClose = vm.runInContext(`(function requestSafeClose() {${method[1]}})`, qmlContext);
+    pinnedWindow.requestSafeClose = vm.runInContext(`(function requestSafeClose(intent) {${method[1]}})`, qmlContext);
     pinnedWindow.requestSafeClose();
     for (let i = 0; i < 8 && saves === 0; i++) await new Promise(resolve => setImmediate(resolve));
     assert.equal(saves, 1, 'native saveNow must run after JS bridge acknowledgment');
@@ -524,7 +550,7 @@ async function pinnedQmlRefusesUncommittedNativeMarkdown(
     assert.equal(element.inert, false, 'refused close must unlock editor without reloading');
     assert.equal(value, 'new');
     assert.match(pinnedWindow.status, expectedError);
-    const bridgeStatus = source.match(/function status\(text, dirty\) \{([^\n]*)\}/);
+    const bridgeStatus = source.match(/function status\(text, dirty, self\) \{([^\n]*)\}/);
     assert.ok(bridgeStatus);
     vm.runInContext(`(function(text,dirty) {${bridgeStatus[1]}})`, qmlContext)('Saved', false);
     assert.match(pinnedWindow.status, expectedError,
@@ -697,7 +723,7 @@ async function ordinaryCloseWaitsForPinnedAck() {
 }
 async function pinnedCloseDeadlineFailsClosedAndRetries() {
     const source = fs.readFileSync(path.join(qml, 'PinnedNoteWindow.qml'), 'utf8');
-    const method = source.match(/function requestSafeClose\(\) \{([\s\S]*?)\n    \}/);
+    const method = source.match(/function requestSafeClose\(intent\) \{([\s\S]*?)\n    \}/);
     const abort = source.match(/function abortSafeClose\(\) \{([\s\S]*?)\n    \}/);
     const poll = source.match(/id: closePoll[\s\S]*?onTriggered: \{([\s\S]*?)\n        \}/);
     const deadline = source.match(/id: closeDeadline\s*\n\s*interval: 5000; repeat: false\s*\n\s*onTriggered: ([^\n]+)/);
@@ -729,7 +755,7 @@ async function pinnedCloseDeadlineFailsClosedAndRetries() {
     const closePoll = {running:false, start(){this.running=true}, stop(){this.running=false}};
     const closeDeadline = {running:false, start(){this.running=true}, stop(){this.running=false}};
     const ctx = vm.createContext({pinnedWindow, collection, pinnedEditor, closePoll, closeDeadline});
-    pinnedWindow.requestSafeClose = vm.runInContext(`(function requestSafeClose() {${method[1]}})`,ctx);
+    pinnedWindow.requestSafeClose = vm.runInContext(`(function requestSafeClose(intent) {${method[1]}})`,ctx);
     pinnedWindow.abortSafeClose = vm.runInContext(`(function abortSafeClose() {${abort[1]}})`,ctx);
     closePoll.onTriggered = vm.runInContext(`(function() {${poll[1]}})`,ctx);
     closeDeadline.onTriggered = vm.runInContext(`(function() {${deadline[1]}})`,ctx);
@@ -750,7 +776,7 @@ async function pinnedCloseDeadlineFailsClosedAndRetries() {
     assert.equal(nativeSaves,0);
     assert.equal(closes,0);
     assert.match(pinnedWindow.closeSaveError,/timed out|retry/i);
-    const bridgeStatus = source.match(/function status\(text, dirty\) \{([^\n]*)\}/);
+    const bridgeStatus = source.match(/function status\(text, dirty, self\) \{([^\n]*)\}/);
     vm.runInContext(`(function(text,dirty) {${bridgeStatus[1]}})`,ctx)('Saved',false);
     assert.match(pinnedWindow.status,/timed out|retry/i,'poll status cannot hide timeout');
     await fan.poll();
@@ -779,7 +805,7 @@ async function pinnedSupersededCloseCannotUnlockOrSkipFinalValueCheck(oldSucceed
         assert.ok(match, 'real pinned close handler must be extractable');
         return match[1];
     };
-    const request = extract(/function requestSafeClose\(\) \{([\s\S]*?)\n    \}/);
+    const request = extract(/function requestSafeClose\(intent\) \{([\s\S]*?)\n    \}/);
     const abort = extract(/function abortSafeClose\(\) \{([\s\S]*?)\n    \}/);
     const poll = extract(/id: closePoll[\s\S]*?onTriggered: \{([\s\S]*?)\n        \}/);
     const {fan, context: page} = load('pinned.js');
@@ -811,7 +837,7 @@ async function pinnedSupersededCloseCannotUnlockOrSkipFinalValueCheck(oldSucceed
     const closePoll = {start(){}, stop(){}};
     const closeDeadline = {start(){}, stop(){}};
     const ctx = vm.createContext({pinnedWindow, collection, pinnedEditor, closePoll, closeDeadline});
-    pinnedWindow.requestSafeClose = vm.runInContext(`(function requestSafeClose() {${request}})`, ctx);
+    pinnedWindow.requestSafeClose = vm.runInContext(`(function requestSafeClose(intent) {${request}})`, ctx);
     pinnedWindow.abortSafeClose = vm.runInContext(`(function abortSafeClose() {${abort}})`, ctx);
     closePoll.onTriggered = vm.runInContext(`(function() {${poll}})`, ctx);
 
@@ -984,4 +1010,5 @@ async function discardMustNotBeRecommittedAtShutdown() {
     await staleProbeCannotCleanUncommittedTail('pinned.js');
     await supersededPushFailureCannotDirtyCleanReversion('app.js');
     await supersededPushFailureCannotDirtyCleanReversion('pinned.js');
+    pinnedWindowIsTheSharedCard();
     console.log('pending edits: PASS'); })().catch(error => { console.error(error); process.exitCode = 1; });

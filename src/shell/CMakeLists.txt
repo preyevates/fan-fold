@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.22)
 
 include(GNUInstallDirs)
 
-find_package(Qt6 6.8 REQUIRED COMPONENTS Core Gui Qml Quick Widgets)
+find_package(Qt6 6.8 REQUIRED COMPONENTS Core DBus Gui Qml Quick Widgets)
 find_package(KF6DBusAddons 6.0 REQUIRED)
 
 # The shipped shell: the QML presentation layer over the Fan Fold document engine.
@@ -27,6 +27,7 @@ target_link_libraries(fanfold PRIVATE
     FanFold::DocumentEngine
     FanFold::FontCatalog
     Qt6::Core
+    Qt6::DBus
     Qt6::Gui
     Qt6::Qml
     KF6::DBusAddons
@@ -93,6 +94,7 @@ install(FILES
     qml/FanAutoHideReveal.qml
     qml/PinnedNoteWindow.qml
     qml/QuietButton.qml
+    qml/NoteCard.qml
     qml/LibraryRowAction.qml
     qml/IconPanel.qml
     qml/RecordingPrompt.qml
@@ -103,6 +105,7 @@ install(FILES
     qml/LayoutContract.js
     qml/index.html
     qml/app.js
+    qml/editor-assets.js
     qml/editor.js
     qml/editor.html
     qml/editor-theme.css

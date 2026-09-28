@@ -181,8 +181,26 @@ QVariantMap NotesAdapter::colourOf(const QString &id) const
     const QString stored = Palette::normalizeInk(document->ink()).isEmpty()
         ? Palette::autoInk()
         : Palette::normalizeInk(document->ink());
+    const QStringList offered = Palette::paletteColors(m_palette);
+    // The icon in the form load() hands the deck: a bare theme name, or an absolute file
+    // URL for a file inside the library.
+    const QString storedIcon = document->icon();
+    QString icon;
+    if (storedIcon.startsWith(QStringLiteral("theme:"))) {
+        icon = storedIcon.mid(6);
+    } else if (!storedIcon.isEmpty()) {
+        icon = QUrl::fromLocalFile(QDir(m_collection->rootPath()).filePath(storedIcon)).toString();
+    }
+    // The same per-note facts load() publishes for fanned notes, so a pinned window's
+    // colour panel can mark the current swatch and ink mode exactly as the card does.
     return {{QStringLiteral("paper"), paperValue},
             {QStringLiteral("ink"), Palette::resolveInk(paperValue, stored)},
+            {QStringLiteral("inkStored"), stored},
+            {QStringLiteral("inkMode"), stored == Palette::autoInk() ? QStringLiteral("auto")
+                                                                     : QStringLiteral("explicit")},
+            {QStringLiteral("inPalette"), offered.contains(paperValue)},
+            {QStringLiteral("inkInPalette"), stored != Palette::autoInk() && offered.contains(stored)},
+            {QStringLiteral("icon"), icon},
             // The note's own typography override ("" / 0 = follow the global setting), so
             // a pinned window honours it exactly as the deck does.
             {QStringLiteral("fontFamily"), document->fontFamily()},
