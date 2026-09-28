@@ -95,7 +95,19 @@ bool isRegularSingleLink(const QString &path, struct stat *output = nullptr)
     return true;
 }
 
-constexpr auto displacedDirectoryName = ".fanfold-displaced";
+// Library metadata lives inside the library so that moving or renaming the folder carries
+// every note's layout with it. Other Markdown editors, Obsidian included, skip dot-directories.
+constexpr auto metadataDirectoryName = ".fanfold";
+constexpr auto displacedDirectoryName = ".fanfold/displaced";
+constexpr auto legacyDisplacedDirectoryName = ".fanfold-displaced";
+
+bool insideMetadata(const QString &relative)
+{
+    return relative == QLatin1String(metadataDirectoryName)
+        || relative.startsWith(QLatin1String(metadataDirectoryName) + QLatin1Char('/'))
+        || relative == QLatin1String(legacyDisplacedDirectoryName)
+        || relative.startsWith(QLatin1String(legacyDisplacedDirectoryName) + QLatin1Char('/'));
+}
 
 QStringList retainedInodes(const QString &root, const QString &id)
 {
@@ -111,7 +123,7 @@ QStringList retainedInodes(const QString &root, const QString &id)
 }
 
 // The expected bytes are encoded in the name, not kept only in memory or in the
-// possibly cross-device XDG state directory. This works after a process restart.
+// index. This works after a process restart.
 bool retainedUnchanged(const QString &path, const QString &id)
 {
     const QString name = QFileInfo(path).fileName();
@@ -133,7 +145,7 @@ bool isArchivedPath(const QString &relativePath)
         || relativePath.startsWith(QLatin1String(archiveFolderName) + QLatin1Char('/'));
 }
 
-/** Schema version of the XDG index this build writes.
+/** Schema version of the library index this build writes.
  *
  * 1 — flat `"fan"` array: one curated working set for the whole library.
  * 2 — `"folderOrder"` (folder -> ordered ids) plus `"openFolder"`: the fan is a window
@@ -355,7 +367,7 @@ bool DocumentCollection::openRoot(const QString &folder)
 
 /** Validate a candidate library completely without disturbing the live one.
  *
- * Every step that can fail — the root itself, the XDG state directory and the stored
+ * Every step that can fail — the root itself, its metadata directory and the stored
  * index — happens here, so openRoot() only tears down the previous library once the new
  * one is known to be usable.
  * @param folder Folder the host or the test supplied.
@@ -379,22 +391,25 @@ bool DocumentCollection::prepareLibrary(const QString &folder, PendingLibrary *p
         return false;
     }
 
-    const QByteArray key = QCryptographicHash::hash(canonical.toUtf8(), QCryptographicHash::Sha256).toHex();
-    const QString state = QDir(m_stateRoot).filePath(QStringLiteral("libraries/%1").arg(QString::fromLatin1(key)));
-    if (!QDir().mkpath(state) || !QDir().mkpath(QDir(state).filePath(QStringLiteral("recovery")))) {
-        setError(QStringLiteral("Cannot create the XDG metadata directory"));
+    const QString state = QDir(canonical).filePath(QLatin1String(metadataDirectoryName));
+    QString directoryError;
+    if (!ensureDirectoryChain(canonical, QLatin1String(metadataDirectoryName) + QStringLiteral("/recovery"),
+                              &directoryError)) {
+        setError(QStringLiteral("Cannot create the library metadata directory: %1").arg(directoryError));
+        return false;
+    }
+    if (!importLegacyState(canonical, state)) {
         return false;
     }
 
     QJsonObject stored{{QStringLiteral("version"), kIndexVersion},
-                       {QStringLiteral("root"), canonical},
                        {QStringLiteral("documents"), QJsonObject{}},
                        {QStringLiteral("folderOrder"), QJsonObject{}},
                        {QStringLiteral("openFolder"), QString()}};
     QFile index(QDir(state).filePath(QStringLiteral("index.json")));
     if (index.exists()) {
         if (!index.open(QIODevice::ReadOnly) || index.size() > 4 * 1024 * 1024) {
-            setError(QStringLiteral("Cannot read the XDG document index; Markdown was left untouched"));
+            setError(QStringLiteral("Cannot read the library index; Markdown was left untouched"));
             return false;
         }
         QJsonParseError parseError {};
@@ -420,12 +435,11 @@ bool DocumentCollection::prepareLibrary(const QString &folder, PendingLibrary *p
         }
         if (parseError.error != QJsonParseError::NoError || !parsed.isObject()
             || version < 1 || version > kIndexVersion
-            || parsed.object().value(QStringLiteral("root")).toString() != canonical
             || !validDocuments) {
             // Fresh IDs would orphan recovery records keyed by the old IDs, then
             // overwrite the only index that can map those edits back to their notes.
             // Keep both index and journal intact until the index is repaired.
-            setError(QStringLiteral("Invalid or mismatched XDG document index; library was not opened and Markdown was left untouched"));
+            setError(QStringLiteral("Invalid library index; library was not opened and Markdown was left untouched"));
             return false;
         } else {
             // A pre-0.2.0 index carries a flat `fan`; migrate it here, where the previous
@@ -438,6 +452,49 @@ bool DocumentCollection::prepareLibrary(const QString &folder, PendingLibrary *p
     pending->rootPath = canonical;
     pending->statePath = state;
     pending->metadata = stored;
+    return true;
+}
+
+/** Adopt metadata an earlier build kept outside the library.
+ *
+ * Earlier builds filed each library's index and recovery journals under the state root,
+ * keyed by a hash of the folder's absolute path, and kept displaced inodes in a sibling
+ * dot-directory. A library that has no index of its own yet takes a copy of that record;
+ * the original is left where it was so an older build still finds it.
+ */
+bool DocumentCollection::importLegacyState(const QString &root, const QString &state)
+{
+    const QString legacyDisplaced = QDir(root).filePath(QLatin1String(legacyDisplacedDirectoryName));
+    const QString displaced = QDir(root).filePath(QLatin1String(displacedDirectoryName));
+    struct stat metadata {};
+    if (::lstat(QFile::encodeName(legacyDisplaced).constData(), &metadata) == 0 && S_ISDIR(metadata.st_mode)
+        && !QFileInfo::exists(displaced)) {
+        // Same filesystem by construction, so this is a rename, never a copy.
+        QDir().rename(legacyDisplaced, displaced);
+    }
+
+    const QString index = QDir(state).filePath(QStringLiteral("index.json"));
+    if (QFileInfo::exists(index)) {
+        return true;
+    }
+    const QByteArray key = QCryptographicHash::hash(root.toUtf8(), QCryptographicHash::Sha256).toHex();
+    const QDir legacy(QDir(m_stateRoot).filePath(QStringLiteral("libraries/%1").arg(QString::fromLatin1(key))));
+    if (!QFileInfo::exists(legacy.filePath(QStringLiteral("index.json")))) {
+        return true;
+    }
+    const QDir legacyRecovery(legacy.filePath(QStringLiteral("recovery")));
+    for (const QString &name : legacyRecovery.entryList({QStringLiteral("*.json")}, QDir::Files)) {
+        const QString target = QDir(state).filePath(QStringLiteral("recovery/") + name);
+        if (!QFileInfo::exists(target) && !QFile::copy(legacyRecovery.filePath(name), target)) {
+            setError(QStringLiteral("Cannot copy a recovery journal into the library; Markdown was left untouched"));
+            return false;
+        }
+    }
+    // The index goes last: its presence is what marks the import complete.
+    if (!QFile::copy(legacy.filePath(QStringLiteral("index.json")), index)) {
+        setError(QStringLiteral("Cannot copy the previous index into the library; Markdown was left untouched"));
+        return false;
+    }
     return true;
 }
 
@@ -927,8 +984,8 @@ bool DocumentCollection::saveNow(const QString &id)
         && digest(displaced.read(maximumDocumentBytes + 1)) == document->m_revision
         && isRegularSingleLink(stagedPath);
     displaced.close();
-    // The old inode must stay on THIS filesystem. XDG AppData may be on a
-    // different device; EXDEV after the exchange would falsely flag every save.
+    // The old inode must stay on THIS filesystem; EXDEV after the exchange would
+    // falsely flag every save, so it goes beside the note, never to another mount.
     // Do not replace an existing backup, and never let QTemporaryFile unlink a
     // displaced inode after the exchange, even if a later operation fails.
     replacement.setAutoRemove(false);
@@ -1586,8 +1643,7 @@ QList<DocumentCollection::DiskEntry> DocumentCollection::scan(QStringList *warni
             continue;
         }
         const QString relative = QDir(m_rootPath).relativeFilePath(absolute);
-        if (relative.startsWith(QLatin1String(displacedDirectoryName) + QLatin1Char('/'))
-            || !confinedRelative(relative) || !relative.endsWith(QStringLiteral(".md"), Qt::CaseInsensitive)) {
+        if (insideMetadata(relative) || !confinedRelative(relative) || !relative.endsWith(QStringLiteral(".md"), Qt::CaseInsensitive)) {
             continue;
         }
         struct stat metadata {};
@@ -1857,7 +1913,7 @@ void DocumentCollection::markMetadataDirty()
     m_metadataDirty = true;
 }
 
-/** Write the XDG index, but only when something in it actually changed.
+/** Write the library index, but only when something in it actually changed.
  *
  * A resident application reconciles twice a second; persisting unconditionally would
  * rewrite this file forever and defeat the "no churn" contract the UI relies on.
@@ -1872,7 +1928,6 @@ bool DocumentCollection::persistMetadata()
         documents.insert(it.key(), metadataFor(it.value()));
     }
     m_metadata = QJsonObject{{QStringLiteral("version"), kIndexVersion},
-                             {QStringLiteral("root"), m_rootPath},
                              {QStringLiteral("documents"), documents},
                              {QStringLiteral("folderOrder"), storedFolderOrder()},
                              {QStringLiteral("openFolder"), m_openFolder}};
@@ -1880,7 +1935,7 @@ bool DocumentCollection::persistMetadata()
     QSaveFile file(indexPath());
     file.setDirectWriteFallback(false);
     if (!file.open(QIODevice::WriteOnly) || file.write(bytes) != bytes.size() || !file.commit()) {
-        setError(QStringLiteral("Cannot atomically persist XDG document metadata"));
+        setError(QStringLiteral("Cannot atomically persist the library index"));
         return false;
     }
     m_metadataDirty = false;
@@ -2115,7 +2170,10 @@ void DocumentCollection::refreshWatches()
     QDirIterator iterator(m_rootPath, QDir::Dirs | QDir::NoDotAndDotDot, QDirIterator::Subdirectories);
     while (iterator.hasNext()) {
         const QString path = iterator.next();
-        if (!iterator.fileInfo().isSymLink()) wantedDirectories.insert(path);
+        // Watching our own metadata would turn every index or journal write into a rescan.
+        if (!iterator.fileInfo().isSymLink() && !insideMetadata(QDir(m_rootPath).relativeFilePath(path))) {
+            wantedDirectories.insert(path);
+        }
     }
     QSet<QString> wantedFiles;
     for (Document *document : m_documents) {

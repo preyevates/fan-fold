@@ -3,6 +3,7 @@
 
 #include <QDirIterator>
 #include <QFile>
+#include <QFileInfo>
 #include <QSaveFile>
 #include <QTemporaryDir>
 #include <QTest>
@@ -149,10 +150,7 @@ void ExternalEditingTest::failedRecoveryJournalIsReportedAndPreventsUnsafeSave()
     StoreAdapter adapter(&collection);
     const QString id = collection.idForRelativePath("Synthetic.md");
     const QString revision = adapter.load(id).value("revision").toString();
-    QDirIterator entries(state.path(), {QStringLiteral("recovery")}, QDir::Dirs,
-                         QDirIterator::Subdirectories);
-    QVERIFY(entries.hasNext());
-    const QString recoveryDir = entries.next();
+    const QString recoveryDir = QFileInfo(collection.metadataPath()).dir().filePath(QStringLiteral("recovery"));
     QVERIFY(QDir().rmdir(recoveryDir));
     QFile blocked(recoveryDir);
     QVERIFY(blocked.open(QIODevice::WriteOnly));
@@ -185,7 +183,7 @@ void ExternalEditingTest::lateWriteThroughExternalDescriptorRemainsReachable()
     QCOMPARE(oldDescriptor.write("late-external\n"), qint64(QByteArray("late-external\n").size()));
     QVERIFY(oldDescriptor.flush());
     QCOMPARE(readFile(path), QByteArray("local\n"));
-    QDirIterator retained(notes.filePath(QStringLiteral(".fanfold-displaced")),
+    QDirIterator retained(notes.filePath(QStringLiteral(".fanfold/displaced")),
                           {QStringLiteral("*.old")}, QDir::Files);
     QVERIFY2(retained.hasNext(), "the previous inode must remain reachable beside the library");
     QCOMPARE(readFile(retained.next()), QByteArray("late-external\n"));

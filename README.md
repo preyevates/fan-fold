@@ -182,12 +182,13 @@ packages are needed for them.
 ### First run
 
 Fan Fold asks for a notes folder on first launch — pick a new one or an existing folder of
-Markdown files. It writes nothing into that folder until you ask it to: `Assets/` appears the
-first time you attach an image or icon, `Archive/` the first time you archive a note,
-and `.fanfold-displaced/` when saving an existing note.
+Markdown files. Opening it creates one hidden `.fanfold/` directory, which holds each
+note's colours, icon, pin and order, plus crash recovery. Because it lives inside the folder,
+moving or renaming the folder keeps all of that. Other Markdown editors, Obsidian included,
+ignore it. Nothing else is written until you ask: `Assets/` appears the first time you
+attach an image or icon, `Archive/` the first time you archive a note.
 
-Settings live in `~/.config/FanFold/`, library state in `~/.local/share/FanFold/`. Your notes
-never leave the folder you chose.
+Application settings live in `~/.config/FanFold/`. Your notes never leave the folder you chose.
 
 **Requirements:** KDE Plasma 6 on Wayland or X11, Qt 6.8 or newer. The published
 0.2.0-11 amd64 package is built on Ubuntu 26.04 (resolute); older distributions may
@@ -203,7 +204,7 @@ final Markdown save fails. If recovery itself fails, keep the window open and co
 edits; in-memory text is not a durable backup.
 
 Atomic saves retain **one prior displaced inode per note**, in the library's hidden
-`.fanfold-displaced/` directory on the same filesystem. Changed or ambiguous retained
+`.fanfold/displaced/` directory on the same filesystem. Changed or ambiguous retained
 files stop subsequent saves and are preserved for inspection. This is bounded protection,
 not indefinite external-editor compatibility: writes through an old open file descriptor
 after its one-generation retention window can no longer be detected or preserved. Keep

@@ -15,8 +15,8 @@
  * object is owned by DocumentCollection and is published unchanged to every fan card,
  * Library row, search hit and pinned window, so no surface can hold a second buffer for
  * the same note. Its ID is independent of the current path. Markdown on disk remains the
- * authoritative content; UI metadata lives in the collection's XDG state instead of being
- * written into the user's notes.
+ * authoritative content; UI metadata lives in the library's hidden `.fanfold/` directory
+ * instead of being written into the user's notes.
  *
  * The `disk*` properties describe the file as last stat'ed by the collection, not the
  * editor buffer: while `dirty` is true they still report what a different application
@@ -139,15 +139,15 @@ private:
  *   only, minus anything archived, trashed or pinned. Membership is DERIVED from that
  *   rule and is not state — nothing "joins" the fan. What IS state is the per-folder
  *   ORDER the user arranges by dragging, and the open folder itself; both persist in the
- *   XDG index.
+ *   library index.
  *
  * It combines QFileSystemWatcher invalidations with authoritative rescans, writes edits
  * through QSaveFile after a precise 250 ms quiet period restarted by every keystroke,
  * journals every dirty buffer first, and refuses saves when the disk revision no longer
  * matches. Reconciliation that finds nothing new emits no model signals and rewrites no
  * metadata, so a resident application can poll indefinitely without churning the UI or
- * the disk. Metadata and crash recovery live in XDG application state rather than beside
- * the user's Markdown.
+ * the disk. Metadata and crash recovery live in the library's `.fanfold/` directory, never inside
+ * the user's Markdown, so they travel with the folder when it is moved or renamed.
  *
  * Switching roots is transactional: the new root, its state directory and its index are
  * fully validated before anything is torn down, and any pending save in the old library
@@ -190,8 +190,8 @@ public:
     Q_ENUM(Role)
 
     /** Construct an engine.
-     * @param stateRoot Explicit XDG-equivalent state root for headless tests. Empty uses
-     * QStandardPaths::AppDataLocation in production.
+     * @param stateRoot Where earlier builds kept library state, read once to import it.
+     * Empty uses QStandardPaths::AppDataLocation in production.
      */
     explicit DocumentCollection(QString stateRoot = {}, QObject *parent = nullptr);
     ~DocumentCollection() override;
@@ -217,7 +217,7 @@ public:
     /** Root-relative folder the fan is currently a window onto; empty means the root. */
     QString openFolder() const { return m_openFolder; }
     Document *document(const QString &id) const { return m_documents.value(id); }
-    /** Absolute path of the XDG index this library persists its metadata to. */
+    /** Absolute path of the index this library persists its metadata to. */
     Q_INVOKABLE QString metadataPath() const;
 
     /** Open only the folder explicitly supplied by the host or `--root` test argument.
@@ -281,7 +281,7 @@ public:
     Q_INVOKABLE bool isInFan(const QString &id) const { return m_fan.contains(id); }
 
     Q_INVOKABLE bool setPinned(const QString &id, bool pinned);
-    /** Persist the settled client size of a pinned window in XDG session metadata. */
+    /** Persist the settled client size of a pinned window in the library index. */
     Q_INVOKABLE bool setPinnedWindowSize(const QString &id, int width, int height);
     Q_INVOKABLE bool setPaper(const QString &id, const QString &paper);
 
@@ -392,6 +392,7 @@ private:
     static bool lessThanByPath(const QString &left, const QString &right);
 
     bool prepareLibrary(const QString &folder, PendingLibrary *pending);
+    bool importLegacyState(const QString &root, const QString &state);
     void adoptLibrary(PendingLibrary &&pending);
     void teardownLibrary();
     /** True when `id` belongs on the fan right now: in the open folder, and neither

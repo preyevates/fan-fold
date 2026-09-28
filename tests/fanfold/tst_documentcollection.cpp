@@ -10,6 +10,7 @@
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QCryptographicHash>
 #include <memory>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -47,7 +48,7 @@ quint64 inodeOf(const QString &path)
 
 QStringList displacedFiles(const QString &root)
 {
-    const QDir directory(QDir(root).filePath(QStringLiteral(".fanfold-displaced")));
+    const QDir directory(QDir(root).filePath(QStringLiteral(".fanfold/displaced")));
     QStringList files;
     for (const QString &name : directory.entryList(QDir::Files | QDir::NoDotAndDotDot))
         files.append(directory.filePath(name));
@@ -93,6 +94,8 @@ class DocumentCollectionTest final : public QObject
 private slots:
     void discoversMarkdownRecursivelyWithoutFollowingLinks();
     void assignsStableIdsAcrossRenameAndAtomicReplacement();
+    void layoutTravelsWithMovedLibrary();
+    void importsLegacyStateOnce();
     void createsUniqueUntitledNotes();
     void debouncesAtomicAutosaveFor250Milliseconds();
     void crossFilesystemStateRetainsDisplacedInodeBesideLibrary();
@@ -185,6 +188,65 @@ void DocumentCollectionTest::assignsStableIdsAcrossRenameAndAtomicReplacement()
     QCOMPARE(collection.document(id)->content(), QStringLiteral("two\n"));
 }
 
+void DocumentCollectionTest::layoutTravelsWithMovedLibrary()
+{
+    QTemporaryDir parent;
+    QTemporaryDir state;
+    const QString before = QDir(parent.path()).filePath("Stickies");
+    const QString after = QDir(parent.path()).filePath("Notes");
+    QVERIFY(QDir().mkpath(before + "/sub"));
+    writeBytes(before + "/sub/Alpha.md", "alpha\n");
+    {
+        DocumentCollection collection(state.path());
+        QVERIFY(collection.openRoot(before));
+        const QString id = collection.idForRelativePath("sub/Alpha.md");
+        QVERIFY(collection.setPaper(id, "#44475a"));
+        QVERIFY(collection.setPinned(id, true));
+        collection.closeRoot();
+    }
+    QVERIFY(QDir().rename(before, after));
+
+    DocumentCollection moved(state.path());
+    QVERIFY2(moved.openRoot(after), qPrintable(moved.lastError()));
+    const QString id = moved.idForRelativePath("sub/Alpha.md");
+    QVERIFY(!id.isEmpty());
+    QCOMPARE(moved.document(id)->paper(), QStringLiteral("#44475a"));
+    QVERIFY(moved.document(id)->pinned());
+    QCOMPARE(QFileInfo(moved.metadataPath()).absolutePath(), QDir(after).filePath(".fanfold"));
+    QVERIFY(moved.idForRelativePath(".fanfold/index.json").isEmpty());
+}
+
+void DocumentCollectionTest::importsLegacyStateOnce()
+{
+    Fixture f;
+    writeBytes(f.notes.filePath("Alpha.md"), "alpha\n");
+    const QString root = QFileInfo(f.notes.path()).canonicalFilePath();
+    const QByteArray key = QCryptographicHash::hash(root.toUtf8(), QCryptographicHash::Sha256).toHex();
+    const QString legacy = QDir(f.state.path()).filePath("libraries/" + QString::fromLatin1(key));
+    QVERIFY(QDir().mkpath(legacy + "/recovery"));
+    const QJsonObject index{{"version", 2}, {"root", root}, {"openFolder", QString()},
+                            {"folderOrder", QJsonObject{}},
+                            {"documents", QJsonObject{{"legacy-id", QJsonObject{
+                                {"path", "Alpha.md"}, {"paper", "#bd93f9"}}}}}};
+    writeBytes(legacy + "/index.json", QJsonDocument(index).toJson());
+    QVERIFY(QDir().mkpath(f.notes.filePath(".fanfold-displaced")));
+    writeBytes(f.notes.filePath(".fanfold-displaced/old.old"), "old\n");
+
+    auto &collection = f.collection();
+    QCOMPARE(collection.idForRelativePath("Alpha.md"), QStringLiteral("legacy-id"));
+    QCOMPARE(collection.document("legacy-id")->paper(), QStringLiteral("#bd93f9"));
+    QVERIFY(QFileInfo::exists(legacy + "/index.json"));
+    QVERIFY(QFileInfo::exists(f.notes.filePath(".fanfold/displaced/old.old")));
+    QVERIFY(!QFileInfo::exists(f.notes.filePath(".fanfold-displaced")));
+
+    // Once the library has its own index, the old record is never read again.
+    QVERIFY(collection.setPaper("legacy-id", "#44475a"));
+    collection.closeRoot();
+    DocumentCollection reopened(f.state.path());
+    QVERIFY(reopened.openRoot(f.notes.path()));
+    QCOMPARE(reopened.document("legacy-id")->paper(), QStringLiteral("#44475a"));
+}
+
 void DocumentCollectionTest::createsUniqueUntitledNotes()
 {
     Fixture f;
@@ -246,7 +308,7 @@ void DocumentCollectionTest::crossFilesystemStateRetainsDisplacedInodeBesideLibr
     QCOMPARE(backups.size(), 1);
     QCOMPARE(inodeOf(backups.first()), previousInode);
     QCOMPARE(readBytes(backups.first()), QByteArray("old\n"));
-    QVERIFY(collection.idForRelativePath(QStringLiteral(".fanfold-displaced/")) .isEmpty());
+    QVERIFY(collection.idForRelativePath(QStringLiteral(".fanfold/displaced/")) .isEmpty());
 }
 
 void DocumentCollectionTest::repeatedSavesRetainOnlyOnePreviousGeneration()
@@ -1027,7 +1089,6 @@ void DocumentCollectionTest::parseableIndexWithoutDocumentMapCannotOrphanPending
     QVERIFY(!originalJournal.isEmpty());
     QJsonObject malformed = QJsonDocument::fromJson(originalIndex).object();
     QCOMPARE(malformed.value(QStringLiteral("version")).toInt(), 2);
-    QCOMPARE(malformed.value(QStringLiteral("root")).toString(), QFileInfo(f.notes.path()).canonicalFilePath());
     malformed.insert(QStringLiteral("documents"), QJsonArray{});
     const QByteArray damagedIndex = QJsonDocument(malformed).toJson();
     atomicReplace(indexPath, damagedIndex);
