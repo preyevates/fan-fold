@@ -176,10 +176,10 @@ PlasmaCore.Dialog {
     property string palette: manifest.palette
     property var palettes: manifest.palettes
     property var order: manifest.order
-    // Bounded by the available work area, so the card and its fan deck never extend under
+    // Bounded by the dock's working height, so the card and its fan deck never extend under
     // a panel; the fan pitch limit below is derived from this same clamped height.
     property real cardWidth: Math.min(appearance.width, dialog.availW-36)
-    property real cardHeight: Math.min(appearance.height, dialog.availH-12)
+    property real cardHeight: Math.min(appearance.height, dialog.dockWorkH-12)
     property int selected: 0
     // An empty library makes `ids[selected]` undefined, and an undefined id propagates
     // into every string/colour binding below as a QML type warning. Resolve to "" instead.
@@ -799,6 +799,17 @@ PlasmaCore.Dialog {
     property real availY: dialog.available.height>0 ? dialog.available.y : dialog.screenY
     property real availW: dialog.available.width>0 ? dialog.available.width : dialog.screenW
     property real availH: dialog.available.height>0 ? dialog.available.height : dialog.screenH
+    /** The bottom strip of the screen that belongs to the panel, measured from the SCREEN's
+     *  bottom edge. No dock window, in any state, reaches into it: a window there sits on
+     *  the panel's tray and takes its clicks. On Wayland the work area above is the whole
+     *  screen, so this is the only thing keeping the dock off the panel. 60 px clears a
+     *  55 px panel. */
+    property int panelReserve: 60
+    /** The part of that reserve the reported work area does not already exclude. */
+    property int panelClearance: LayoutContract.panelClearance(dialog.screenY, dialog.screenH,
+        dialog.availY, dialog.availH, dialog.panelReserve)
+    /** The height the dock works in: the work area less the panel clearance. */
+    property real dockWorkH: Math.max(0, dialog.availH - dialog.panelClearance)
 
     // ---- Fan geometry and the compact edge hover spread ------------------------------
     // ONE global spacing control: the fan stick PITCH in pixels. Not tabSpacing, which is the
@@ -824,21 +835,25 @@ PlasmaCore.Dialog {
     /** Furthest screen-edge coordinate the bounded deck viewport may reserve. A deck that
      *  fits keeps its natural, lower top; overflow stops here instead of growing the dock. */
     property int fanViewportLimitTop: 42
-    /** Clearance between the lane's bottom and the SCREEN's edge. On Wayland a client is
-     *  never told the work area — availH is the full screen height — so this inset must
-     *  clear the task manager on its own. 64 px clears Plasma's default 44 px panel with
+    /** Clearance between the lane's bottom and the bottom of the reported work area, which
+     *  on Wayland is the SCREEN's edge. 64 px clears Plasma's default 44 px panel with
      *  margin to spare; 18 px parks the "+" on top of it. */
-    property int fanBottomInset: 64
-    /** The full-edge surface: the window spans the WORK AREA's height rather than the card's,
+    property int fanScreenBottomGap: 64
+    /** The same lane bottom, measured from the window's bottom edge. The window already
+     *  stops `panelClearance` short of the work area's bottom, so the inset gives that back
+     *  and the deck stays where it is on screen. */
+    property int fanBottomInset: LayoutContract.fanBottomInset(dialog.fanScreenBottomGap,
+        dialog.panelClearance)
+    /** The full-edge surface: the window spans the dock's WORKING height rather than the card's,
      * so the deck may spread the whole screen edge. The card floats centred inside it; fan
      * geometry anchors to the BOTTOM, nearest the panel and task manager.
      *
-     * Clamped to the work area, never merely floored to it. A surface taller than the
-     * available height makes the centring offset in `alignmentTimer` negative; the
+     * Clamped to the working height, never merely floored to it. A surface taller than the
+     * working height makes the centring offset in `alignmentTimer` negative; the
      * `Math.max(0, …)` guard there pins it to zero and the whole deck jumps to the top of the
-     * screen. Written as a plain expression because with both bounds equal to `availH - 12`
+     * screen. Written as a plain expression because with both bounds equal to `dockWorkH - 12`
      * a min-of-max collapses to exactly that. */
-    property int fanSurfaceH: Math.max(0, dialog.availH - 12)
+    property int fanSurfaceH: Math.max(0, dialog.dockWorkH - 12)
     /** Zone reserved at the bottom of the lane for the "+": a 30 px button plus breathing.
      *
      * A CONSTANT, deliberately. Deriving it from `fanHitOffset` (which follows the live
@@ -873,7 +888,7 @@ PlasmaCore.Dialog {
         ? dialog.fanDeckMaskTop : Math.min(dialog.fanDeckMaskTop, Math.max(0, dialog.fanSearchTop - 4))
     /** The WINDOW is only as tall as the part of the lane actually in use.
      *
-     * `fanSurfaceH` is the full work-area height and must stay the coordinate space the fan
+     * `fanSurfaceH` is the full working height and must stay the coordinate space the fan
      * geometry is expressed in. But a window of that height is a 48 px column running the
      * whole screen edge, and every pixel of it eats input — including the close button of
      * whatever is maximised underneath. PlasmaCore.Dialog exposes no input mask (`margins`,
@@ -1264,12 +1279,12 @@ PlasmaCore.Dialog {
             // right edge would otherwise sit on top of the fan tabs.
             dialog.x = LayoutContract.dialogEdgeAxisPosition(dialog.availX, dialog.availW, dialog.width, "right")
             // Collapsed, the window is only the occupied strip of the lane, so it anchors to
-            // the BOTTOM of the work area — the deck's own anchor; centring a short window
+            // the BOTTOM of the working height — the deck's own anchor; centring a short window
             // would float the fan into the middle of the screen. Expanded, it is the full
-            // surface again and centring keeps the card where it belongs.
-            dialog.y = dialog.expanded || dialog.libraryOpen || dialog.order.length === 0
-                ? dialog.availY + Math.max(0, Math.round((dialog.availH-dialog.height)/2))
-                : dialog.availY + Math.max(0, dialog.availH - dialog.height)
+            // surface again and centring keeps the card where it belongs. Either way it ends
+            // above the panel reserve.
+            dialog.y = LayoutContract.dockWindowY(dialog.availY, dialog.dockWorkH, dialog.height,
+                dialog.expanded || dialog.libraryOpen || dialog.order.length === 0)
         }
     }
     Component.onCompleted: { alignment.start(); restorePersistedPins() }
@@ -1298,7 +1313,7 @@ PlasmaCore.Dialog {
         onHeightChanged: alignment.restart()
         /** Only the OCCUPIED part of the lane accepts clicks.
          *
-         * The window spans the whole work-area height so the deck can use the full screen
+         * The window spans the whole working height so the deck can use the full screen
          * edge. Without a mask the empty region above the topmost tab is still ours, and a
          * 48 px column swallows every press for the height of the screen — including the close
          * buttons of whatever is maximised underneath. The mask is the union of the fan's own

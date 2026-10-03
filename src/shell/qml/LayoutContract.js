@@ -96,6 +96,37 @@ function dialogEdgeAxisPosition(availablePosition, availableLength, windowLength
     return availablePosition + availableLength - windowLength
 }
 
+/** How much of a bottom panel strip the dock must still keep clear of itself.
+ *
+ *  `reserve` is measured from the SCREEN's bottom edge. On Wayland a client reads back the
+ *  whole screen as its work area, so the task manager is invisible to it and the reserve
+ *  must clear it unaided; where the work area does exclude a panel, only the part of the
+ *  reserve it has not already excluded is added, so the panel is never counted twice.
+ */
+function panelClearance(screenY, screenHeight, availableY, availableHeight, reserve) {
+    var excluded = (screenY + screenHeight) - (availableY + availableHeight)
+    return Math.max(0, reserve - Math.max(0, excluded))
+}
+
+/** The lane's inset from the dock window's bottom edge.
+ *
+ *  `screenGap` is the lane's clearance from the bottom of the work area as reported. The
+ *  window already stops `clearance` above that, so the inset shrinks by the same amount and
+ *  the deck stays where it was on screen.
+ */
+function fanBottomInset(screenGap, clearance) {
+    return Math.max(0, screenGap - clearance)
+}
+
+/** Dock window y: bottom-anchored when collapsed, centred otherwise, inside the working
+ *  height (the work area less the panel clearance).
+ */
+function dockWindowY(availableY, workHeight, windowHeight, centred) {
+    return centred
+        ? availableY + Math.max(0, Math.round((workHeight - windowHeight)/2))
+        : availableY + Math.max(0, workHeight - windowHeight)
+}
+
 /** Height available between a surface-local panel and a footer inside the paper.
  *
  *  The footer's y is local to the paper while the panel's y is local to their shared

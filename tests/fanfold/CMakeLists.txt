@@ -120,6 +120,9 @@ if(QMLTESTRUNNER_EXECUTABLE)
         ${CMAKE_CURRENT_SOURCE_DIR}/qml/tst_libraryrowaction.qml
         ${FANFOLD_QML_TEST_STAGE}/tst_libraryrowaction.qml COPYONLY)
     configure_file(
+        ${CMAKE_CURRENT_SOURCE_DIR}/qml/tst_panelreserve.qml
+        ${FANFOLD_QML_TEST_STAGE}/tst_panelreserve.qml COPYONLY)
+    configure_file(
         ${CMAKE_CURRENT_SOURCE_DIR}/../../src/shell/qml/FanAutoHideReveal.qml
         ${FANFOLD_QML_TEST_STAGE}/FanAutoHideReveal.qml COPYONLY)
     configure_file(
