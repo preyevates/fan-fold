@@ -161,4 +161,13 @@ if(TARGET fanfold)
                 ${CMAKE_BINARY_DIR} ${CMAKE_SOURCE_DIR} ${FANFOLD_LOCAL_THEME_BUNDLE}
     )
     set_tests_properties(fanfold-package PROPERTIES TIMEOUT 180 SKIP_RETURN_CODE 77)
+
+    # The package test's private D-Bus session must not share the host's runtime dir, or it
+    # takes the host's xdg-document-portal down. Checked with a stand-in bus, never a real one.
+    add_test(
+        NAME fanfold-package-runtime-isolation
+        COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/package/check_private_runtime_dir.sh
+                ${CMAKE_BINARY_DIR} ${CMAKE_SOURCE_DIR} ${FANFOLD_LOCAL_THEME_BUNDLE}
+    )
+    set_tests_properties(fanfold-package-runtime-isolation PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
 endif()

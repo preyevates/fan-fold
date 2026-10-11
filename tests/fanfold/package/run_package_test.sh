@@ -5,7 +5,7 @@ set -eu
 build_dir=$1
 source_dir=$2
 local_theme_bundle=$3
-work_dir="$build_dir/package-test"
+work_dir="${FANFOLD_PACKAGE_TEST_WORK_DIR:-$build_dir/package-test}"
 stage="$work_dir/stage"
 xdg="$work_dir/xdg"
 notes="$work_dir/notes"
@@ -109,9 +109,17 @@ else
         exit 77
     fi
     mkdir -p "$xdg/home"
+    # The bus needs a runtime dir of its own, never the host's. The first thing it does is
+    # activate xdg-document-portal by direct exec, and that portal always mounts its FUSE
+    # filesystem at $XDG_RUNTIME_DIR/doc after unmounting whatever is already there; on the
+    # host's runtime dir that takes the user's live portal down. mktemp -d gives mode 700,
+    # and it lives under /tmp because the bus socket is created inside it and a socket path
+    # is limited to about 100 bytes, which a build directory path can exceed.
+    runtime=$(mktemp -d /tmp/fanfold-package-runtime.XXXXXX)
     set +e
     (
         cd /
+        XDG_RUNTIME_DIR="$runtime" \
         HOME="$xdg/home" \
         XDG_CONFIG_HOME="$xdg/config" \
         XDG_CACHE_HOME="$xdg/cache" \
@@ -122,6 +130,12 @@ else
     )
     status=$?
     set -e
+    # The portal unmounts its filesystem when the bus goes away; this covers a bus killed
+    # before it could. A mount that survives both leaves the directory behind, harmlessly.
+    if [ -d "$runtime/doc" ]; then
+        fusermount3 -u -z "$runtime/doc" >/dev/null 2>&1 || true
+    fi
+    rm -rf "$runtime" 2>/dev/null || true
     case "$status" in
         124|143) ;;
         *)
@@ -130,7 +144,11 @@ else
             exit 1
             ;;
     esac
-    if grep -E 'QQmlApplicationEngine failed|module ".*" is not installed|No such file or directory|ERR_FILE_NOT_FOUND' "$log" >/dev/null; then
+    # The session bus also activates the desktop portal backends, which look for a Wayland
+    # socket in the private runtime dir and report "Failed to create wl_display (No such file
+    # or directory)". That is the isolation working, not a missing asset.
+    if grep -v 'Failed to create wl_display' "$log" \
+        | grep -E 'QQmlApplicationEngine failed|module ".*" is not installed|No such file or directory|ERR_FILE_NOT_FOUND' >/dev/null; then
         printf 'installed Fan Fold reported a runtime asset/import failure\n' >&2
         cat "$log" >&2
         exit 1
