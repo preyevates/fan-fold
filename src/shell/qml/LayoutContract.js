@@ -137,3 +137,43 @@ function libraryPanelCap(paperY, footerY, panelY, minimumHeight, gap) {
     var footerSurfaceY = paperY + footerY
     return footerSurfaceY > panelY + minimumHeight ? footerSurfaceY - panelY - gap : 100000
 }
+
+/** Whether a screen reports a drawable area. */
+function screenHasArea(screen) {
+    return !!screen && screen.width > 0 && screen.height > 0
+}
+
+/** Whether the dock may be presented at all.
+ *
+ *  When the last output goes away Qt Wayland keeps the process on a placeholder screen with
+ *  a 0x0 geometry. Everything the dock measures comes from the screen, so a window shown
+ *  there collapses to a negative height and the compositor drops the connection. The dock
+ *  therefore waits for a real screen, and for its OWN screen to be that screen: the list can
+ *  already hold the returning output while the window is still being moved onto it.
+ *
+ *  @param screens   Qt.application.screens, any indexable list of {width, height}
+ *  @param ownWidth  Screen.width of the window
+ *  @param ownHeight Screen.height of the window */
+function dockCanShow(screens, ownWidth, ownHeight) {
+    if (!screens || !(screens.length > 0)) {
+        return false
+    }
+    if (!(ownWidth > 0 && ownHeight > 0)) {
+        return false
+    }
+    for (var i = 0; i < screens.length; ++i) {
+        if (screenHasArea(screens[i])) {
+            return true
+        }
+    }
+    return false
+}
+
+/** A window extent the compositor will accept: a whole number of at least one pixel.
+ *
+ *  xdg-shell treats a non-positive window geometry as a protocol error and disconnects the
+ *  client, so no size derived from live screen state may reach a window unclamped. */
+function windowExtent(value) {
+    var n = Math.round(Number(value))
+    return isFinite(n) && n >= 1 ? n : 1
+}

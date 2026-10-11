@@ -85,6 +85,11 @@ buffer instead, with the caret snapshotted while the pane has focus.
 - **The window is masked to the occupied strip of the lane.** Every pixel of a dock window
   eats input, and a full-height column swallows clicks meant for whatever is underneath.
   The mask is lifted when the fan is empty, because the welcome panel needs the whole area.
+- **The dock is shown only while a real screen exists, and `Main.qml`'s `visible` is bound to
+  that.** When the last output disappears Qt Wayland keeps the process on a placeholder screen of
+  0x0; a dock shown there measures a negative height and the compositor drops the connection.
+  Nothing may assign `dialog.visible`: an assignment replaces the binding and the guard is gone.
+  Window extents that derive from the screen go through `LayoutContract.windowExtent`.
 - **Archive and Trash arm on first press and act on the second.** They move the user's file;
   a single stray click must never file a note.
 - **`Assets/` and `Archive/` are created on demand, not at startup.** An untouched notes

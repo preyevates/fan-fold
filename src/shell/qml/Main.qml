@@ -14,7 +14,7 @@ import "LayoutContract.js" as LayoutContract
 PlasmaCore.Dialog {
     id: dialog
     objectName: "fanDialog"
-    visible: true
+    visible: dialog.screenUsable
     flags: Qt.Tool | Qt.FramelessWindowHint
     type: PlasmaCore.Dialog.Dock
     backgroundHints: PlasmaCore.Types.NoBackground
@@ -783,13 +783,23 @@ PlasmaCore.Dialog {
         })
     }
     onClosing: function(close) { if(!dialog.allowDiscard) { close.accepted=false; dialog.requestClose() } }
-    onActiveChanged: if(!active && expanded && !closePrompt.visible) collapse()
+    // Losing the screen deactivates the window without the user leaving it, so an open note
+    // stays open until the screen comes back.
+    onActiveChanged: if(!active && expanded && !closePrompt.visible && dialog.screenUsable) collapse()
 
     // ---- Screen rectangles ---------------------------------------------------------
     // Screen reports the full screen; the AVAILABLE work area (panels and struts removed) is
     // read back natively from the QScreen this window is on, and re-read on screen or
     // work-area change. The dock is placed against the available rectangle, never the full
     // one, so a panel on the same edge is never painted over.
+    /** False while the compositor has no output. Qt Wayland then parks the process on a
+     *  placeholder screen of 0x0, and a dock shown there collapses to a negative height,
+     *  which the compositor answers by dropping the connection. `visible` is bound to this
+     *  and nothing may assign it: the dock is held back until a real screen returns, then
+     *  shown again and re-docked. */
+    readonly property bool screenUsable: LayoutContract.dockCanShow(
+        Qt.application.screens, Screen.width, Screen.height)
+    onScreenUsableChanged: if (dialog.screenUsable) alignment.restart()
     property real screenX: Screen.virtualX
     property real screenY: Screen.virtualY
     property real screenW: Screen.width
@@ -1301,12 +1311,14 @@ PlasmaCore.Dialog {
         // An empty library takes the card's own width so the empty state has room to speak.
         // Otherwise the window is one 48 px fan lane over a transparent background —
         // nothing to see, which reads as a failed application.
-        width: (dialog.expanded || dialog.libraryOpen || dialog.order.length === 0)
-            ? dialog.cardWidth+32 : dialog.fanCollapsedWidth
+        // Clamped: every extent here derives from the screen, and a window geometry that is
+        // not positive is a protocol error the compositor answers by dropping the connection.
+        width: LayoutContract.windowExtent((dialog.expanded || dialog.libraryOpen || dialog.order.length === 0)
+            ? dialog.cardWidth+32 : dialog.fanCollapsedWidth)
         // Only the occupied strip, so the empty column above the deck is not part of the
         // window and cannot swallow clicks meant for the app underneath. Children keep
         // using fanSurfaceH coordinates and are shifted up by the same offset below.
-        height: dialog.fanSurfaceH - dialog.fanVisibleTop
+        height: LayoutContract.windowExtent(dialog.fanSurfaceH - dialog.fanVisibleTop)
         /** The card's top inside the edge-tall surface: centred, like the old window was. */
         property int cardTop: Math.max(0, Math.round((dialog.fanSurfaceH - dialog.cardHeight)/2) - dialog.fanVisibleTop)
         onWidthChanged: alignment.restart()
@@ -2158,7 +2170,6 @@ PlasmaCore.Dialog {
             } else if(dialog.visible && dialog.fanHoverOpen) {
                 dialog.fanHoverOpen = false
             } else {
-                dialog.visible = true
                 dialog.fanHoverOpen = true
                 fanHold.restart()
                 alignment.restart()
@@ -2169,7 +2180,6 @@ PlasmaCore.Dialog {
             // A second launch means "show me the notes", so this only ever opens. An open
             // card is already the most revealed state and is left alone.
             if(dialog.expanded) return
-            dialog.visible = true
             dialog.fanHoverOpen = true
             dialog.fanRevealHeld = true
             dialog.fanRevealTimer.restart()
