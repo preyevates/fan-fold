@@ -5,6 +5,8 @@
 #include <QDBusConnection>
 #include <QDBusMessage>
 #include <QDBusReply>
+#include <QEventLoop>
+#include <QTimer>
 #include <QSocketNotifier>
 #include <cerrno>
 #include <fcntl.h>
@@ -69,6 +71,11 @@ void SessionExit::terminate()
 {
     if (m_terminating) return;
     m_terminating = true;
+    // Give already-in-flight bridge deliveries a fixed grace period, not a
+    // Chromium handshake. Exclude user input so a discard cannot race the flush.
+    QEventLoop drain;
+    QTimer::singleShot(100, &drain, &QEventLoop::quit);
+    drain.exec(QEventLoop::ExcludeUserInputEvents);
     commitPending();
     // exit() ends the loop without delivering another vetoable window close.
     // There is deliberately no aboutToQuit save: that would revive a discard.

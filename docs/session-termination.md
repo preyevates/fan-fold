@@ -21,6 +21,7 @@ is never overwritten. Failure is reported without vetoing termination.
   `isShuttingDown` method on close, using a 250 ms D-Bus timeout. Only a valid
   true reply chooses non-interactive termination; false, absent or failed
   replies retain normal close behavior. Footer and tray actions do not query it.
+  KSMServer also reports true during Checkpoint, so a window close then exits instead of prompting.
 - SIGTERM writes one byte to a nonblocking, close-on-exec pipe. A socket notifier
   performs the flush and exits on the GUI thread. The signal handler itself
   calls no Qt or storage APIs. Repeated signals coalesce; a full pipe already

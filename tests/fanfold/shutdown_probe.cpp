@@ -2,6 +2,7 @@
 #include <QFile>
 #include <QDir>
 #include <QDBusConnection>
+#include <QDBusContext>
 #include <QQmlEngine>
 #include <QQmlContext>
 #include <QQuickWindow>
@@ -30,9 +31,10 @@ static void scheduleProbe()
     QTimer::singleShot(1200, qApp, [scenario] {
         auto *ksm = new FakeKsm;
         ksm->setParent(qApp);
-        if (!QDBusConnection::sessionBus().registerService(QStringLiteral("org.kde.ksmserver"))
-            || !QDBusConnection::sessionBus().registerObject(QStringLiteral("/KSMServer"),
-                ksm, QDBusConnection::ExportAllSlots)) qFatal("private KSM mock failed");
+        if (scenario != "normal-absent-failure"
+            && (!QDBusConnection::sessionBus().registerService(QStringLiteral("org.kde.ksmserver"))
+                || !QDBusConnection::sessionBus().registerObject(QStringLiteral("/KSMServer"),
+                    ksm, QDBusConnection::ExportAllSlots))) qFatal("private KSM mock failed");
         for (QWindow *window : QGuiApplication::topLevelWindows()) {
             QQmlContext *context = QQmlEngine::contextForObject(window);
             if (!context) continue;
@@ -73,7 +75,17 @@ static void scheduleProbe()
                 QCoreApplication::exit(42);
             });
             const auto started = std::chrono::steady_clock::now();
-            QObject::connect(qApp, &QCoreApplication::aboutToQuit, qApp, [started] {
+            if (scenario.endsWith("-queued")) {
+                QTimer::singleShot(20, collection, [collection, id] {
+                    if (!collection->updateContent(id, QStringLiteral("queued shutdown fixture\n")))
+                        qFatal("could not deliver queued fixture");
+                    qApp->setProperty("queuedDelivered", true);
+                });
+                QTimer::singleShot(300, qApp, [] { qFatal("termination drain exceeded its budget"); });
+            }
+            QObject::connect(qApp, &QCoreApplication::aboutToQuit, qApp, [started, scenario] {
+                if (scenario.endsWith("-queued") && !qApp->property("queuedDelivered").toBool())
+                    qFatal("termination skipped queued native delivery");
                 const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
                     std::chrono::steady_clock::now() - started).count();
                 std::fprintf(stderr, "PROBE termination latency=%lldms\n", static_cast<long long>(elapsed));

@@ -10,7 +10,7 @@ import time
 
 binary, assets = map(str, map(Path, sys.argv[1:3]))
 failures = []
-for scenario in ("quit", "wayland", "wayland-failure", "pinned", "pinned-failure", "session", "session-failure", "state", "term", "term-failure", "normal-failure"):
+for scenario in ("quit", "wayland", "wayland-failure", "pinned", "pinned-failure", "session", "session-failure", "state", "term", "term-failure", "normal-failure", "normal-absent-failure", "term-queued", "wayland-queued", "pinned-queued"):
     with tempfile.TemporaryDirectory(prefix="fanfold-shutdown-") as tmp:
         root = Path(tmp)
         for name in ("home", "notes", "state", "run"):
@@ -60,6 +60,8 @@ for scenario in ("quit", "wayland", "wayland-failure", "pinned", "pinned-failure
                 records = list((root / "notes/.fanfold/recovery").glob("*.json"))
                 assert any(json.loads(p.read_text())["content"] == "pending shutdown fixture\n"
                            for p in records), "latest Markdown absent from recovery"
+            elif scenario.endswith("-queued"):
+                assert note.read_text() == "queued shutdown fixture\n", "queued Markdown not committed"
             else:
                 assert note.read_text() == "pending shutdown fixture\n", "pending Markdown not committed"
         except AssertionError as error:
