@@ -297,6 +297,7 @@ Window {
         })
     }
     onClosing: function(close) {
+        if (sessionExit.closeForSessionEnd()) return
         close.accepted = false
         requestSafeClose("unpin")
     }

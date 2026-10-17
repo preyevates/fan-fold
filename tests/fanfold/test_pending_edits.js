@@ -141,7 +141,7 @@ async function cleanQuitRefusesFailedNativeFlush() {
                     saveStatus: 'Saved', openNote() {}, selected: 0};
     const collection = {lastError: 'Atomic autosave staging failed: Permission denied',
                         flushPendingSaves() { flushes++; return false; }};
-    const context = vm.createContext({dialog, collection, loader: {item: null},
+    const context = vm.createContext({dialog, collection, sessionExit: {closeForSessionEnd() {return false;}}, loader: {item: null},
                                       pinnedWindows: {count: 0}, Qt: {quit() { exits++; }}});
     dialog.closeGateTimer = dialog.closeGateTimer || {start(){},stop(){}};
     dialog.checkEditorsForClose = vm.runInContext(`(function checkEditorsForClose(excludedId, done) {${gate[1]}})`, context);
@@ -444,7 +444,7 @@ async function discardPromptFlushesOtherNativeNotes() {
                     allowDiscard: false, saveStatus: '', closeRequested: true};
     const collection = {lastError: 'Atomic autosave staging failed: Permission denied',
         discardSelectedAfterFlushingOthers(id) { assert.equal(id, 'n1'); flushes++; return false; }};
-    const context = vm.createContext({dialog, collection, loader: {item: null},
+    const context = vm.createContext({dialog, collection, sessionExit: {closeForSessionEnd() {return false;}}, loader: {item: null},
                                       pinnedWindows: {count: 0}, Qt: {quit() { exits++; }}});
     dialog.closeGateTimer = dialog.closeGateTimer || {start(){},stop(){}};
     dialog.checkEditorsForClose = vm.runInContext(`(function checkEditorsForClose(excludedId, done) {${gate[1]}})`, context);

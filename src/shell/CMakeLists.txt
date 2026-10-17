@@ -12,6 +12,8 @@ find_package(KF6DBusAddons 6.0 REQUIRED)
 # QML binds to.
 add_executable(fanfold
     main.cpp
+    sessionexit.cpp
+    sessionexit.h
     appearanceadapter.cpp
     appearanceadapter.h
     notesadapter.cpp

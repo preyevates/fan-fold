@@ -155,6 +155,24 @@ set_tests_properties(fanfold-appearance PROPERTIES TIMEOUT 120)
 # publication contract: no runtime asset may resolve through the source checkout, and
 # removal must leave notes and XDG state untouched.
 if(TARGET fanfold)
+    find_package(Qt6 REQUIRED COMPONENTS Widgets Qml Quick DBus)
+    find_package(KF6DBusAddons REQUIRED)
+    add_executable(fanfold_shutdown_probe shutdown_probe.cpp
+        ../../src/shell/main.cpp ../../src/shell/sessionexit.cpp ../../src/shell/appearanceadapter.cpp
+        ../../src/shell/notesadapter.cpp ../../src/shell/storeadapter.cpp)
+    target_compile_definitions(fanfold_shutdown_probe PRIVATE main=fanfoldApplicationMain)
+    add_dependencies(fanfold_shutdown_probe fanfold_assets)
+    target_include_directories(fanfold_shutdown_probe PRIVATE ../../src/shell)
+    target_link_libraries(fanfold_shutdown_probe PRIVATE FanFold::DocumentEngine
+        FanFold::FontCatalog Qt6::Gui Qt6::Qml Qt6::Quick Qt6::Widgets
+        Qt6::DBus KF6::DBusAddons)
+    find_program(XVFB_RUN_EXECUTABLE xvfb-run)
+    if(XVFB_RUN_EXECUTABLE)
+        add_test(NAME fanfold-shutdown COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/test_shutdown.py
+            $<TARGET_FILE:fanfold_shutdown_probe> ${CMAKE_BINARY_DIR}/src/shell/qml)
+        set_tests_properties(fanfold-shutdown PROPERTIES TIMEOUT 120)
+    endif()
     add_test(
         NAME fanfold-package
         COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/package/run_package_test.sh

@@ -1048,6 +1048,32 @@ bool DocumentCollection::flushPendingSaves()
     return flushPendingSavesExcept(QString());
 }
 
+bool DocumentCollection::flushForSessionEnd()
+{
+    bool committed = true;
+    QStringList failures;
+    const QStringList ids = m_catalog;
+    for (const QString &id : ids) {
+        cancelScheduledSave(id);
+        Document *document = m_documents.value(id);
+        if (!document || !document->m_dirty || saveNow(id)) continue;
+        committed = false;
+        QString error = document->m_saveError;
+        // Retry even if a previous journal write succeeded: the journal may have
+        // disappeared, or a previously full/unavailable volume may be back.
+        if (!writeRecovery(document)) {
+            document->m_recoveryFailed = true;
+            error += QStringLiteral("; recovery write failed: latest edits may exist only in memory");
+        } else {
+            document->m_recoveryFailed = false;
+            error += QStringLiteral("; pending edits retained in recovery");
+        }
+        failures.append(error);
+    }
+    setError(failures.join(QStringLiteral("; ")));
+    return committed;
+}
+
 bool DocumentCollection::flushPendingSavesExcept(const QString &excludedId)
 {
     bool success = true;

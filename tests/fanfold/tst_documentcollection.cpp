@@ -107,6 +107,8 @@ private slots:
     void externalDeleteKeepsDirtyRecoveryVisible();
     void pendingEditRecoversAfterCrashWithoutClobberingExternalChange();
     void normalCloseFlushesPendingSave();
+    void sessionEndRetainsConflictAndCommitsOthers();
+    void sessionEndReportsUnavailableRecovery();
     void failedCloseFlushKeepsMarkdownAndReportsReason();
     void discardCloseFlushesOtherNotesButNotSelected();
     void failedOtherFlushDoesNotDiscardSelected();
@@ -476,6 +478,47 @@ void DocumentCollectionTest::normalCloseFlushesPendingSave()
     QVERIFY(collection.flushPendingSaves());
     QCOMPARE(readBytes(f.notes.filePath("Alpha.md")), QByteArray("closing\n"));
     QVERIFY(!collection.hasRecovery(id));
+}
+
+void DocumentCollectionTest::sessionEndRetainsConflictAndCommitsOthers()
+{
+    Fixture f;
+    writeBytes(f.notes.filePath("Alpha.md"), "external\n");
+    writeBytes(f.notes.filePath("Beta.md"), "base\n");
+    auto &collection = f.collection();
+    const QString alpha = collection.idForRelativePath("Alpha.md");
+    const QString beta = collection.idForRelativePath("Beta.md");
+    QVERIFY(collection.holdConflictedContent(alpha, QStringLiteral("local\n")));
+    QVERIFY(collection.updateContent(beta, QStringLiteral("committed\n")));
+    const QString journal = f.notes.filePath(".fanfold/recovery/" + alpha + ".json");
+    QVERIFY(QFile::remove(journal));
+    QVERIFY(!collection.flushForSessionEnd());
+    QCOMPARE(readBytes(f.notes.filePath("Alpha.md")), QByteArray("external\n"));
+    QCOMPARE(readBytes(f.notes.filePath("Beta.md")), QByteArray("committed\n"));
+    QCOMPARE(QJsonDocument::fromJson(readBytes(journal)).object().value("content").toString(), QStringLiteral("local\n"));
+    QVERIFY(collection.document(alpha)->dirty());
+    QVERIFY(!collection.document(beta)->dirty());
+    f.value.reset();
+    auto &reopened = f.collection();
+    QCOMPARE(reopened.document(alpha)->content(), QStringLiteral("local\n"));
+    QVERIFY(reopened.document(alpha)->conflict());
+}
+
+void DocumentCollectionTest::sessionEndReportsUnavailableRecovery()
+{
+    Fixture f;
+    writeBytes(f.notes.filePath("Alpha.md"), "external\n");
+    auto &collection = f.collection();
+    const QString id = collection.idForRelativePath("Alpha.md");
+    QVERIFY(collection.holdConflictedContent(id, QStringLiteral("local\n")));
+    const QString journal = f.notes.filePath(".fanfold/recovery/" + id + ".json");
+    QVERIFY(QFile::remove(journal));
+    // A directory at the exact journal name refuses atomic replacement even as root.
+    QVERIFY(QDir().mkpath(journal));
+    QVERIFY(!collection.flushForSessionEnd());
+    QVERIFY(collection.lastError().contains(QStringLiteral("recovery write failed")));
+    QCOMPARE(readBytes(f.notes.filePath("Alpha.md")), QByteArray("external\n"));
+    QCOMPARE(collection.document(id)->content(), QStringLiteral("local\n"));
 }
 
 void DocumentCollectionTest::failedCloseFlushKeepsMarkdownAndReportsReason()

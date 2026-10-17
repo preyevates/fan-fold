@@ -782,7 +782,7 @@ PlasmaCore.Dialog {
             Qt.quit()
         })
     }
-    onClosing: function(close) { if(!dialog.allowDiscard) { close.accepted=false; dialog.requestClose() } }
+    onClosing: function(close) { if(sessionExit.closeForSessionEnd()) return; if(!dialog.allowDiscard) { close.accepted=false; dialog.requestClose() } }
     // Losing the screen deactivates the window without the user leaving it, so an open note
     // stays open until the screen comes back.
     onActiveChanged: if(!active && expanded && !closePrompt.visible && dialog.screenUsable) collapse()

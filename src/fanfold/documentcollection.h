@@ -246,6 +246,8 @@ public:
     Q_INVOKABLE bool saveNow(const QString &id);
     /** Flush all non-conflicting pending saves for a normal application close. */
     Q_INVOKABLE bool flushPendingSaves();
+    // Non-interactive termination: retry recovery on every failed native save.
+    bool flushForSessionEnd();
     /** Commit every other native buffer before explicitly discarding one selected editor. */
     Q_INVOKABLE bool flushPendingSavesExcept(const QString &excludedId);
     /** Explicit close choice: commit others first, then remove only selected recovery. */

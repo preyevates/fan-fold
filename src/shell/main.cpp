@@ -36,6 +36,7 @@
 #include <QQmlContext>
 #include <QQuickWindow>
 #include <QSettings>
+#include <QSessionManager>
 #include <QStandardPaths>
 #include <QFile>
 #include <QFileInfo>
@@ -57,6 +58,7 @@
 #include "librarymodel.h"
 #include "notesadapter.h"
 #include "storeadapter.h"
+#include "sessionexit.h"
 
 namespace {
 
@@ -736,6 +738,17 @@ int main(int argc, char **argv)
     QCoreApplication::setApplicationName(QStringLiteral("Fan Fold"));
 
     DocumentCollection collection(parser.value(stateOption));
+    SessionExit sessionExit(&collection);
+    if (!sessionExit.installSignalHandler()) {
+        qCritical("Could not install the session termination handler");
+        return 2;
+    }
+    // These signals may also be session checkpoints: commit synchronously but
+    // let the session manager decide when to terminate the application.
+    QObject::connect(&application, &QGuiApplication::commitDataRequest, &sessionExit,
+                     [&sessionExit](QSessionManager &) { sessionExit.commitPending(); });
+    QObject::connect(&application, &QGuiApplication::saveStateRequest, &sessionExit,
+                     [&sessionExit](QSessionManager &) { sessionExit.commitPending(); });
 
     // No default notes location is invented: the folder is the one supplied or the one
     // this machine remembers being told about.
@@ -816,6 +829,7 @@ int main(int argc, char **argv)
     context->setContextProperty(QStringLiteral("webAssetRoot"), QUrl::fromLocalFile(root));
     context->setContextProperty(QStringLiteral("tray"), &tray);
     context->setContextProperty(QStringLiteral("shellControl"), &shellControl);
+    context->setContextProperty(QStringLiteral("sessionExit"), &sessionExit);
     // The application's own icon, staged beside the QML assets, for in-app branding
     // (welcome panel and the Settings header inside the editor page).
     const QString iconFile = QDir(root).filePath(QStringLiteral("appicon.svg"));
@@ -863,9 +877,6 @@ int main(int argc, char **argv)
     QObject::connect(&uniqueInstance, &KDBusService::activateRequested, &tray,
                      &TrayBridge::revealRequested);
 
-    // The normal close paths already flush synchronously and can veto a failed write.
-    // A shutdown callback cannot veto and would recommit an explicitly discarded note;
-    // forced termination is covered by the recovery journal instead.
     return application.exec();
 }
 
