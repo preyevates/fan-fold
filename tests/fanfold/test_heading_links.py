@@ -45,7 +45,7 @@ def main():
     try:
         with sync_playwright() as p:
             browser = p.chromium.launch()
-            for mode in ('ir', 'wysiwyg', 'preview'):
+            for mode in ('ir-focused', 'ir-rendered', 'wysiwyg', 'preview'):
                 page = browser.new_page(viewport={'width': 582, 'height': 620})
                 page.route('**/editor.js', lambda route: route.abort())
                 page.goto(origin + '/src/shell/qml/editor.html?note=0')
@@ -70,7 +70,7 @@ def main():
                         await Vditor.preview(root,markdown,{cdn:new URL('vendor/package',location.href).href,
                             lang:'en_US',hljs:{enable:false}});
                     }''', MARKDOWN)
-                root = '.vditor-ir .vditor-reset' if mode == 'ir' else '.vditor-wysiwyg .vditor-reset' if mode == 'wysiwyg' else '#rendered'
+                root = '.vditor-ir .vditor-reset' if mode.startswith('ir') else '.vditor-wysiwyg .vditor-reset' if mode == 'wysiwyg' else '#rendered'
                 page.wait_for_selector(root + ' h2')
                 before = page.evaluate('testEditor.getValue()')
                 page.evaluate('''()=>{window.escaped=[];window.open=url=>escaped.push(url);
@@ -78,14 +78,21 @@ def main():
                         if(a){escaped.push(a.getAttribute('href'));e.preventDefault()} });}''')
                 checks=[]
                 for i, (_, slug) in enumerate(HEADINGS):
-                    link = page.locator(root + (' .vditor-ir__link' if mode == 'ir' else ' a')).nth(i)
+                    if mode == 'ir-focused':
+                        page.locator(root + ' p').last.click()
+                    elif mode == 'ir-rendered':
+                        page.evaluate('document.activeElement.blur()')
+                    focused = page.locator(root).evaluate('e=>e === document.activeElement')
+                    if mode.startswith('ir'):
+                        assert focused == (mode == 'ir-focused')
+                    link = page.locator(root + (' .vditor-ir__link' if mode.startswith('ir') else ' a')).nth(i)
                     link.scroll_into_view_if_needed()
                     page.screenshot(path=str(args.evidence / f'{mode}-{i}-before.png'))
                     link.click()
                     metric = page.locator(root + ' h2').nth(i).evaluate('e=>({top:e.getBoundingClientRect().top,bottom:e.getBoundingClientRect().bottom})')
                     page.screenshot(path=str(args.evidence / f'{mode}-{i}-after.png'))
-                    checks.append({'slug': slug, **metric, 'visible': -1 <= metric['top'] < 620})
-                missing=page.locator(root + (' .vditor-ir__link' if mode == 'ir' else ' a')).nth(8)
+                    checks.append({'slug': slug, 'focusedBeforeClick': focused, **metric, 'visible': -1 <= metric['top'] < 620})
+                missing=page.locator(root + (' .vditor-ir__link' if mode.startswith('ir') else ' a')).nth(8)
                 missing.scroll_into_view_if_needed()
                 position=missing.bounding_box()
                 missing.click()
@@ -93,7 +100,7 @@ def main():
                 escaped=page.evaluate('escaped')
                 missing_stayed = missing.bounding_box() == position
                 for i in range(len(OTHER_LINKS)):
-                    page.locator(root + (' .vditor-ir__link' if mode == 'ir' else ' a')).nth(9+i).click()
+                    page.locator(root + (' .vditor-ir__link' if mode.startswith('ir') else ' a')).nth(9+i).click()
                 forwarded = page.evaluate('escaped').copy()
                 del forwarded[:len(escaped)]
                 expected = OTHER_LINKS if mode != 'wysiwyg' else [

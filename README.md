@@ -91,6 +91,16 @@ The formatting toolbar is themed to the note's own paper colour like everything 
   <img src="docs/fan-fold/media/format-toolbar.png" alt="The formatting toolbar open above a note" width="620">
 </p>
 
+### Link to a section in the same note
+
+Use `[Work Done](#work-done)` to jump to `## Work Done` in the current card or
+pinned window. Heading fragments use lowercase text with punctuation removed and spaces
+replaced by hyphens: `## Current Focus: Weed Letters` becomes `#current-focus-weed-letters`.
+Repeated names take `-1`, `-2`, and so on, skipping already-used fragments.
+Unknown fragments do nothing; following a link never inserts anchors into your Markdown.
+Links to other notes retain their existing behavior; `Other.md#section` does not gain
+cross-note section navigation.
+
 ### Give each note its own typography
 
 Use **Aa** in the editor's formatting toolbar to choose that note's font family and size.
