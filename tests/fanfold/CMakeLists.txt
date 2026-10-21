@@ -20,6 +20,13 @@ if(NODE_EXECUTABLE)
         COMMAND ${NODE_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_markdown_fidelity.js)
 endif()
 
+# Browser geometry is separate from compositor acceptance; missing optional tooling
+# must be a visible skip, never a silently untested CSS assertion.
+add_test(NAME fanfold-table-wrapping
+    COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/test_table_wrapping.py
+            --evidence ${CMAKE_CURRENT_BINARY_DIR}/table-wrapping-evidence)
+set_tests_properties(fanfold-table-wrapping PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
+
 add_test(NAME fanfold-icon-export-security
     COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/test_icon_export_security.py)
 add_test(NAME fanfold-asset-import-security

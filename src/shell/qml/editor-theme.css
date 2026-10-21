@@ -160,9 +160,11 @@ html.formatting .vditor-toolbar{display:flex!important}
    borders take the note's spine tone, and the alternating stripe is the spine at low
    opacity so it stays a hint on any colour. */
 .vditor-reset table tr{background-color:transparent!important;border-top:1px solid var(--spine)!important}
+/* Allow prose to wrap at word boundaries; keep the table's block overflow so
+   unbreakable content still scrolls instead of being clipped. */
 .vditor-reset table td,.vditor-reset table th{
  border:1px solid var(--spine)!important;color:var(--ink)!important;
- font-family:var(--font)!important}
+ font-family:var(--font)!important;white-space:normal}
 .vditor-reset table th{background-color:color-mix(in srgb, var(--spine) 45%, transparent)!important}
 .vditor-reset table tbody tr:nth-child(2n){background-color:color-mix(in srgb, var(--spine) 22%, transparent)!important}
 
