@@ -5,6 +5,32 @@
 "use strict";
 const index=Number(new URLSearchParams(location.search).get("note"));
 
+// Resolve against the current rendered headings: editing can replace their DOM at any
+// time. Keep the renderer's IDs and the source untouched; neither uses these slugs.
+document.addEventListener("click",event=>{
+ const link=event.target.closest("a[href], .vditor-ir__link");
+ if(!link)return;
+ const href=link.matches("a")?link.getAttribute("href")
+  :link.closest('[data-type="a"]')?.querySelector(".vditor-ir__marker--link")?.textContent;
+ if(!href || !href.startsWith("#"))return;
+ // Consume even missing/malformed fragments before the renderer can open a window.
+ event.preventDefault();event.stopImmediatePropagation();
+ let fragment;
+ try{fragment=decodeURIComponent(href.slice(1));}catch{return;}
+ const root=link.closest(".vditor-reset");
+ if(!root)return;
+ const used=new Set();
+ for(const heading of root.querySelectorAll("h1,h2,h3,h4,h5,h6")){
+  const text=heading.cloneNode(true);
+  text.querySelectorAll('.vditor-ir__marker,.vditor-anchor').forEach(el=>el.remove());
+  const base=text.textContent.toLowerCase().replace(/[^\p{L}\p{M}\p{N}\p{Pc}\- ]/gu,"").replace(/ /g,"-");
+  let slug=base,suffix=0;
+  while(used.has(slug))slug=base+"-"+(++suffix);
+  used.add(slug);
+  if(slug===fragment){heading.scrollIntoView({block:"start",behavior:"instant"});return;}
+ }
+},true);
+
 let editor=new Vditor("editor",{
  cdn:new URL("vendor/package",location.href).href,lang:"en_US",mode:"ir",height:"100%",
  // Vditor leaves Tab to browser focus traversal unless its tab option is set.

@@ -26,6 +26,10 @@ add_test(NAME fanfold-table-wrapping
     COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/test_table_wrapping.py
             --evidence ${CMAKE_CURRENT_BINARY_DIR}/table-wrapping-evidence)
 set_tests_properties(fanfold-table-wrapping PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
+add_test(NAME fanfold-heading-links
+    COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/test_heading_links.py
+            --evidence ${CMAKE_CURRENT_BINARY_DIR}/heading-links-evidence)
+set_tests_properties(fanfold-heading-links PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
 
 add_test(NAME fanfold-icon-export-security
     COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/test_icon_export_security.py)
