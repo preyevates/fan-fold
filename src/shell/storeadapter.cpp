@@ -4,6 +4,9 @@
 
 #include <QCryptographicHash>
 #include <QDateTime>
+#include <QDir>
+#include <QFileInfo>
+#include <QUrl>
 
 StoreAdapter::StoreAdapter(DocumentCollection *collection, QObject *parent)
     : QObject(parent)
@@ -37,11 +40,40 @@ QVariantMap StoreAdapter::load(const QString &id)
     const QString text = document->content();
     const QString revision = digestOf(text);
     m_loaded.insert(id, revision);
+    const QString assetRoot = QDir::cleanPath(
+        QDir(QFileInfo(document->absolutePath()).absolutePath())
+            .relativeFilePath(m_collection->rootPath()));
     return {{QStringLiteral("ok"), true},
             {QStringLiteral("text"), text},
             {QStringLiteral("revision"), revision},
             {QStringLiteral("filename"), document->fileName()},
+            {QStringLiteral("url"), QUrl::fromLocalFile(document->absolutePath()).toString(QUrl::FullyEncoded)},
+            {QStringLiteral("assetPrefix"), assetRoot == QLatin1String(".") ? QString() : assetRoot + QLatin1Char('/')},
             {QStringLiteral("title"), document->title()}};
+}
+
+QString StoreAdapter::resolveAsset(const QString &id, const QString &href) const
+{
+    const Document *document = m_collection ? m_collection->document(id) : nullptr;
+    if (!document) return {};
+    const QUrl base = QUrl::fromLocalFile(document->absolutePath());
+    QUrl target = base.resolved(QUrl(href));
+    const QString relative = QDir(QFileInfo(document->absolutePath()).absolutePath())
+                                 .relativeFilePath(target.toLocalFile());
+    // Older imports used library-root paths even in nested notes. Never override a
+    // real note-local asset, nor reinterpret arbitrary missing links as root-relative.
+    if (target.isLocalFile() && relative.startsWith(QLatin1String("Assets/"))
+        && !QFileInfo::exists(target.toLocalFile())) {
+        const QString fallback = QDir(m_collection->rootPath()).filePath(relative);
+        if (QFileInfo(fallback).isFile()) {
+            const QString fragment = target.fragment(QUrl::FullyEncoded);
+            const QString query = target.query(QUrl::FullyEncoded);
+            target = QUrl::fromLocalFile(fallback);
+            target.setFragment(fragment, QUrl::StrictMode);
+            target.setQuery(query, QUrl::StrictMode);
+        }
+    }
+    return target.toString(QUrl::FullyEncoded);
 }
 
 QVariantMap StoreAdapter::probe(const QString &id)

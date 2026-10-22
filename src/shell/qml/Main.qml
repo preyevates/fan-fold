@@ -532,35 +532,22 @@ PlasmaCore.Dialog {
             dialog.saveStatus = "Blocked a script link — notes cannot run code"
             return
         }
-        // A link into this library, by file name: "Other.md", "./Other.md", "notes/Other.md",
-        // or the file:// form the web view resolves a relative href into.
-        var root = shellControl.rootPath || ""
-        var path = ""
-        if(lower.indexOf("file://") === 0) path = decodeURIComponent(href.substring(7))
-        else if(href.indexOf("://") < 0) path = href
-        if(path !== "") {
-            var leaf = path.split("#")[0].split("?")[0]
-            if(leaf.toLowerCase().lastIndexOf(".md") === leaf.length-3) {
-                var wanted = leaf.split("/").pop()
-                for(var i=0;i<dialog.order.length;i++) {
-                    var id = dialog.order[i]
-                    if(String(dialog.fileNames[id]) === wanted) { dialog.openNoteId(id, true); return }
+        // The editor supplies an absolute file URL resolved against its own note.
+        // A leaf-name match can silently select a different folder's same-named note.
+        if(lower.indexOf("file:///") === 0) {
+            var path
+            try { path = decodeURIComponent(href.split("#")[0].split("?")[0].substring(7)) }
+            catch (error) { return }
+            for(var i=0;i<dialog.order.length;i++) {
+                var id = dialog.order[i]
+                var document = collection.documentObject(id)
+                if(document && document.absolutePath === path) {
+                    dialog.openNoteId(id, true)
+                    return
                 }
-                dialog.saveStatus = "No note named " + wanted + " in this folder"
-                return
             }
         }
-        // Everything else belongs to the desktop: default browser for http(s), mail client
-        // for mailto:, dialler for tel:, registered handler otherwise. A RELATIVE href must
-        // be made absolute against the LIBRARY first: assets are stored as
-        // "Assets/audio/foo.wav" to keep the notes folder portable, but a bare relative path
-        // handed to the desktop resolves against the APPLICATION's directory instead.
-        if(path !== "" && href.indexOf("://") < 0 && root !== "") {
-            var abs = path.charAt(0) === "/" ? path
-                    : root.replace(/\/+$/, "") + "/" + path.replace(/^\.\//, "")
-            Qt.openUrlExternally("file://" + encodeURI(abs))
-            return
-        }
+        // Notes outside the current deck and assets belong to their desktop handler.
         Qt.openUrlExternally(href)
     }
     /** Scope the fan from inside the Library without dismissing it. Scoping collapses the
@@ -2298,6 +2285,7 @@ PlasmaCore.Dialog {
         function resetAppearance() { return appearanceStore.reset() }
         function previewAppearance(value) { dialog.appearance=appearanceStore.preview(value); alignment.restart() }
         function loadNote(id) { return store.load(id) }
+        function resolveAsset(id, href) { return store.resolveAsset(id, href) }
         function probeNote(id) { return store.probe(id) }
         function saveNote(id,text,revision) { return store.save(id,text,revision) }
         /** Hand every keystroke to the engine without forcing a commit.

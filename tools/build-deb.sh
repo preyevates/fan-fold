@@ -51,8 +51,15 @@ chmod 0755 "$srcdir/debian/rules"
 
 # The changelog is generated rather than tracked: its version is mechanical and it
 # carries no content a human needs to maintain by hand.
+if command -v lsb_release >/dev/null 2>&1; then
+    distribution=$(lsb_release -cs)
+else
+    # Minimal distribution images provide os-release without the optional LSB tool.
+    distribution=$(. /etc/os-release; printf '%s' "${VERSION_CODENAME:-unstable}")
+fi
+
 cat > "$srcdir/debian/changelog" <<EOF
-fanfold ($version) $(lsb_release -cs); urgency=medium
+fanfold ($version) $distribution; urgency=medium
 
   * Fan Fold $upstream_version.
 

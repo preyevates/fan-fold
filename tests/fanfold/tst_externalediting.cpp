@@ -2,11 +2,13 @@
 #include "storeadapter.h"
 
 #include <QDirIterator>
+#include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <QSaveFile>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QUrl>
 
 namespace {
 void replaceFile(const QString &path, const QByteArray &bytes)
@@ -29,6 +31,8 @@ class ExternalEditingTest : public QObject
 {
     Q_OBJECT
 private slots:
+    void loadReportsEncodedNoteUrl();
+    void legacyAssetsPreferNoteFolder();
     void cleanExternalRevisionCannotBeOverwrittenByStaleEditor();
     void externalRevisionBeforeReconcileCannotBeOverwritten();
     void dirtyBufferSurvivesExternalEditAndRestart();
@@ -36,6 +40,54 @@ private slots:
     void failedRecoveryJournalIsReportedAndPreventsUnsafeSave();
     void lateWriteThroughExternalDescriptorRemainsReachable();
 };
+
+void ExternalEditingTest::legacyAssetsPreferNoteFolder()
+{
+    QTemporaryDir notes, state;
+    QVERIFY(notes.isValid() && state.isValid());
+    QVERIFY(QDir(notes.path()).mkpath("Nested/Assets"));
+    QVERIFY(QDir(notes.path()).mkpath("Assets"));
+    replaceFile(notes.filePath("Nested/Source.md"), "![Legacy](Assets/picture%20%231.svg)\n");
+    replaceFile(notes.filePath("Assets/picture #1.svg"), "root asset");
+    DocumentCollection collection(state.path());
+    QVERIFY(collection.openRoot(notes.path()));
+    StoreAdapter adapter(&collection);
+    const QString id = collection.idForRelativePath("Nested/Source.md");
+    auto resolve = [&](const QString &href) {
+        QString result;
+        const bool invoked = QMetaObject::invokeMethod(&adapter, "resolveAsset", Qt::DirectConnection,
+            Q_RETURN_ARG(QString, result), Q_ARG(QString, id), Q_ARG(QString, href));
+        return invoked ? result : QStringLiteral("MISSING RESOLVER");
+    };
+    const QString rootUrl = QUrl::fromLocalFile(notes.filePath("Assets/picture #1.svg")).toString(QUrl::FullyEncoded);
+    QCOMPARE(resolve("Assets/picture%20%231.svg"), rootUrl);
+    const QString localPath = notes.filePath("Nested/Assets/picture #1.svg");
+    replaceFile(localPath, "note-local asset");
+    QCOMPARE(resolve("Assets/picture%20%231.svg"), QUrl::fromLocalFile(localPath).toString(QUrl::FullyEncoded));
+    const QString absolute = QUrl::fromLocalFile(notes.filePath("Nested/missing.pdf")).toString(QUrl::FullyEncoded);
+    QCOMPARE(resolve(absolute), absolute);
+    QCOMPARE(resolve("https://example.com/Assets/a.svg"), QStringLiteral("https://example.com/Assets/a.svg"));
+    QCOMPARE(resolve("../Other/x.md"), QUrl::fromLocalFile(notes.filePath("Other/x.md")).toString(QUrl::FullyEncoded));
+}
+
+void ExternalEditingTest::loadReportsEncodedNoteUrl()
+{
+    QTemporaryDir notes, state;
+    QVERIFY(notes.isValid() && state.isValid());
+    QVERIFY(QDir(notes.path()).mkpath("Remediation #%"));
+    const QString path = notes.filePath("Remediation #%/Source.md");
+    replaceFile(path, "[Sibling](../Other/x.md)\n");
+    DocumentCollection collection(state.path());
+    QVERIFY(collection.openRoot(notes.path()));
+    StoreAdapter adapter(&collection);
+    const QVariantMap loaded = adapter.load(collection.idForRelativePath("Remediation #%/Source.md"));
+    QVERIFY(loaded.value("ok").toBool());
+    const QString url = loaded.value("url").toString();
+    QCOMPARE(loaded.value("assetPrefix").toString(), QStringLiteral("../"));
+    QVERIFY(url.endsWith("/Remediation%20%23%25/Source.md"));
+    QCOMPARE(QUrl(url).toLocalFile(), path);
+    QCOMPARE(QUrl(url).resolved(QUrl("../Other/x.md")).toLocalFile(), notes.filePath("Other/x.md"));
+}
 
 void ExternalEditingTest::cleanExternalRevisionCannotBeOverwrittenByStaleEditor()
 {

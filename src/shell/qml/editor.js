@@ -4,15 +4,54 @@
  */
 "use strict";
 const index=Number(new URLSearchParams(location.search).get("note"));
+let noteUrl=parent.fan.states[index].url;
+let noteDirectory=noteUrl?new URL(".",noteUrl).href:"";
+const legacyAsset=href=>{
+ try{return noteDirectory && new URL(href,noteUrl).href.startsWith(noteDirectory+"Assets/");}
+ catch{return false;}
+};
+const resolveAsset=href=>parent.fan.call("resolveAsset",parent.fan.states[index].id,href);
+// srcset changes the displayed resource without replacing the Markdown's src.
+// Media lives in generated HTML previews; their authored HTML markers stay untouched.
+// Revisit replaced renderer nodes, but never write fallback paths into the source.
+const assetResources=new WeakMap();
+const resolveResources=()=>document.querySelectorAll('img[src],audio[src],video[src],source[src]').forEach(image=>{
+ const src=image.getAttribute('src');
+ if(assetResources.has(image) && assetResources.get(image)!==src)image.removeAttribute('srcset');
+ if(!legacyAsset(src) || assetResources.get(image)===src)return;
+ assetResources.set(image,src);
+ resolveAsset(src).then(url=>{
+  if(!url || image.getAttribute('src')!==src || url===new URL(src,noteUrl).href)return;
+  if(image.tagName==='IMG')image.srcset=url.replace(/,/g,'%2C')+' 1x';
+  else {
+   image.setAttribute('src',url);
+   if(image.tagName==='SOURCE' && image.parentElement instanceof HTMLMediaElement)image.parentElement.load();
+  }
+ });
+});
+new MutationObserver(resolveResources).observe(document.body,{subtree:true,childList:true,attributes:true,attributeFilter:['src']});
 
 // Resolve against the current rendered headings: editing can replace their DOM at any
 // time. Keep the renderer's IDs and the source untouched; neither uses these slugs.
-document.addEventListener("click",event=>{
+document.addEventListener("click",async event=>{
  const link=event.target.closest("a[href], .vditor-ir__link");
  if(!link)return;
  const href=link.matches("a")?link.getAttribute("href")
   :link.closest('[data-type="a"]')?.querySelector(".vditor-ir__marker--link")?.textContent;
- if(!href || !href.startsWith("#"))return;
+ if(!href)return;
+ if(!href.startsWith("#")){
+  if(link.closest('[data-type="a"]')?.classList.contains('vditor-ir__node--expand'))return;
+  // Resolve before Chromium loses the authored relative path to editor.html's base.
+  event.preventDefault();event.stopImmediatePropagation();
+  if(!noteUrl)return;
+  try{
+   const target=new URL(href,noteUrl);
+   if(target.protocol==="javascript:" || target.protocol==="data:")return;
+   const url=legacyAsset(href)?await resolveAsset(href):target.href;
+   if(url)window.open(url,"_blank");
+  }catch{}
+  return;
+ }
  // Consume even missing/malformed fragments before the renderer can open a window.
  event.preventDefault();event.stopImmediatePropagation();
  let fragment;
@@ -89,14 +128,22 @@ let editor=new Vditor("editor",{
  // sixteen renderer aliases (mermaid, flowchart, echarts…) — bash, yaml and text would be
  // missing from it. Loading hljs supplies the real list.
  preview:{delay:100,hljs:{enable:true,style:"github",lineNumber:false},
-  // linkBase makes a RELATIVE asset path resolve against the NOTES FOLDER rather than
+  // linkBase makes a RELATIVE asset path resolve against the NOTE'S FOLDER rather than
   // against this page's own directory under /usr/share/fanfold/qml. Without it
   // `![](Assets/images/x.png)` would be looked up beside editor.html and render broken,
   // which is the whole reason assets are stored relatively in the first place.
-  markdown:{sanitize:true, linkBase:(parent.fan&&parent.fan.linkBase)||""}},
+  markdown:{sanitize:true, linkBase:noteDirectory}},
  input:()=>parent.fan.changed(index),
  after:()=>{ parent.fan.onReady(index,editor); installTableControls(); installRecorder(); brandUploadButton(); installNoteFont(); }
 });
+
+// A failed first load can recover without rebuilding this editor or its undo stack.
+window.updateNoteLocation=()=>{
+ noteUrl=parent.fan.states[index].url;
+ noteDirectory=noteUrl?new URL(".",noteUrl).href:"";
+ editor.vditor.options.preview.markdown.linkBase=noteDirectory;
+ editor.vditor.lute.SetLinkBase(noteDirectory);
+};
 
 /**
  * A table toolbar that appears while the caret is inside a table.

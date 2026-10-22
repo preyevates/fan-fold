@@ -426,6 +426,7 @@ Window {
         id: pinnedBridgeObject
         WebChannel.id: "pinned"
         function loadNote(id) { return store.load(id) }
+        function resolveAsset(id, href) { return store.resolveAsset(id, href) }
         function probeNote(id) { return store.probe(id) }
         function saveNote(id, text, revision) { return store.save(id, text, revision) }
         function noteEdited(id, text) { return store.updateContent(id, text) }
