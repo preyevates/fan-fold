@@ -4,11 +4,36 @@
  */
 "use strict";
 const index=Number(new URLSearchParams(location.search).get("note"));
-const noteUrl=parent.fan.states[index].url;
+let noteUrl=parent.fan.states[index].url;
+let noteDirectory=noteUrl?new URL(".",noteUrl).href:"";
+const legacyAsset=href=>{
+ try{return noteDirectory && new URL(href,noteUrl).href.startsWith(noteDirectory+"Assets/");}
+ catch{return false;}
+};
+const resolveAsset=href=>parent.fan.call("resolveAsset",parent.fan.states[index].id,href);
+// srcset changes the displayed resource without replacing the Markdown's src.
+// Media lives in generated HTML previews; their authored HTML markers stay untouched.
+// Revisit replaced renderer nodes, but never write fallback paths into the source.
+const assetResources=new WeakMap();
+const resolveResources=()=>document.querySelectorAll('img[src],audio[src],video[src],source[src]').forEach(image=>{
+ const src=image.getAttribute('src');
+ if(assetResources.has(image) && assetResources.get(image)!==src)image.removeAttribute('srcset');
+ if(!legacyAsset(src) || assetResources.get(image)===src)return;
+ assetResources.set(image,src);
+ resolveAsset(src).then(url=>{
+  if(!url || image.getAttribute('src')!==src || url===new URL(src,noteUrl).href)return;
+  if(image.tagName==='IMG')image.srcset=url.replace(/,/g,'%2C')+' 1x';
+  else {
+   image.setAttribute('src',url);
+   if(image.tagName==='SOURCE' && image.parentElement instanceof HTMLMediaElement)image.parentElement.load();
+  }
+ });
+});
+new MutationObserver(resolveResources).observe(document.body,{subtree:true,childList:true,attributes:true,attributeFilter:['src']});
 
 // Resolve against the current rendered headings: editing can replace their DOM at any
 // time. Keep the renderer's IDs and the source untouched; neither uses these slugs.
-document.addEventListener("click",event=>{
+document.addEventListener("click",async event=>{
  const link=event.target.closest("a[href], .vditor-ir__link");
  if(!link)return;
  const href=link.matches("a")?link.getAttribute("href")
@@ -22,7 +47,8 @@ document.addEventListener("click",event=>{
   try{
    const target=new URL(href,noteUrl);
    if(target.protocol==="javascript:" || target.protocol==="data:")return;
-   window.open(target.href,"_blank");
+   const url=legacyAsset(href)?await resolveAsset(href):target.href;
+   if(url)window.open(url,"_blank");
   }catch{}
   return;
  }
@@ -106,10 +132,18 @@ let editor=new Vditor("editor",{
   // against this page's own directory under /usr/share/fanfold/qml. Without it
   // `![](Assets/images/x.png)` would be looked up beside editor.html and render broken,
   // which is the whole reason assets are stored relatively in the first place.
-  markdown:{sanitize:true, linkBase:noteUrl?new URL(".",noteUrl).href:""}},
+  markdown:{sanitize:true, linkBase:noteDirectory}},
  input:()=>parent.fan.changed(index),
  after:()=>{ parent.fan.onReady(index,editor); installTableControls(); installRecorder(); brandUploadButton(); installNoteFont(); }
 });
+
+// A failed first load can recover without rebuilding this editor or its undo stack.
+window.updateNoteLocation=()=>{
+ noteUrl=parent.fan.states[index].url;
+ noteDirectory=noteUrl?new URL(".",noteUrl).href:"";
+ editor.vditor.options.preview.markdown.linkBase=noteDirectory;
+ editor.vditor.lute.SetLinkBase(noteDirectory);
+};
 
 /**
  * A table toolbar that appears while the caret is inside a table.

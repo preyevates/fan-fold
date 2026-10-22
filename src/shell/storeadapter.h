@@ -36,6 +36,9 @@ public:
     /** Content plus a revision token. @return {ok,text,revision,filename,url,assetPrefix,title}. */
     Q_INVOKABLE QVariantMap load(const QString &id);
 
+    /** Resolve legacy library-root Assets references only when the note-local file is absent. */
+    Q_INVOKABLE QString resolveAsset(const QString &id, const QString &href) const;
+
     /** Read-only state probe, polled once a second by the editor.
      * @return {ok,revision,conflict,committed}.
      *

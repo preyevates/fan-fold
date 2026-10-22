@@ -16,6 +16,16 @@ the current deck. Other notes, including sibling-folder links, go to the desktop
 absolute file URL, as do assets. A same-named file elsewhere must not select a local note.
 This deliberately does not add cross-note fragment navigation.
 
+The library-root fallback for legacy `Assets/...` references is read-only: the native store
+checks for a note-local file first and uses an existing library-root file only if it is absent.
+Both hosts expose that same resolver. Inline images use `srcset` to display the resolved asset
+without changing the Markdown's `src`; generated audio/video/source previews use the same
+resolver without changing their authored HTML markers. The observer follows renderer node
+replacement and clears its own stale image `srcset` when an image is edited. No note is migrated
+or rewritten. New imports remain ordinary note-relative references. Successful reload refreshes
+both the slot's native URL/import prefix and the renderer's base before replacing its content,
+including recovery from a failed first load.
+
 ## Regression checks
 
 - `test_relative_links.py`: real renderer clicks in focused and rendered IR, WYSIWYG and

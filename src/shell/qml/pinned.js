@@ -215,6 +215,8 @@ fan.reload = async () => {
     }
     if (r.ok) {
         s.loaded = false;
+        s.url = r.url; s.assetPrefix = r.assetPrefix;
+        fan.frames[0].contentWindow.updateNoteLocation();
         fan.editors[0].setValue(r.text);
         s.revision = r.revision; s.baseline = fan.editors[0].getValue(); s.loaded = true;
         s.pushed = undefined; s.lastAcknowledgedPush = undefined;

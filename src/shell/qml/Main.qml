@@ -2285,6 +2285,7 @@ PlasmaCore.Dialog {
         function resetAppearance() { return appearanceStore.reset() }
         function previewAppearance(value) { dialog.appearance=appearanceStore.preview(value); alignment.restart() }
         function loadNote(id) { return store.load(id) }
+        function resolveAsset(id, href) { return store.resolveAsset(id, href) }
         function probeNote(id) { return store.probe(id) }
         function saveNote(id,text,revision) { return store.save(id,text,revision) }
         /** Hand every keystroke to the engine without forcing a commit.

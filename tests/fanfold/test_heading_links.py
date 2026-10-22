@@ -53,7 +53,8 @@ def main():
                 # Only the native bridge is replaced; editor.js is unmodified.
                 page.evaluate('''markdown=>{
                     window.fixtures=[markdown]; window.notes={collapse(){}};
-                    window.fan={active:0,states:[{url:'file:///notes/Source.md'}],changed(){window.changes++},
+                    window.fan={active:0,states:[{id:'source',url:'file:///notes/Source.md'}],changed(){window.changes++},
+                        call(method,id,href){return Promise.resolve(new URL(href,'file:///notes/Source.md').href)},
                         remember(){},onReady(i,e){window.testEditor=e;window.ready=true}};
                     window.changes=0;
                 }''', MARKDOWN)

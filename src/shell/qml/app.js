@@ -88,7 +88,7 @@ fan.reload=async i=>{
  const before=fan.editors[i].getValue();
  s.busy=true;const r=await fan.call("loadNote",s.id);
  if(s.dirty || fan.editors[i].getValue()!==before){s.busy=false;s.dirty=true;s.status="CONFLICT · edited during reload; buffer kept";fan.publish();fan.changed(i);return;}
- if(r.ok){s.loaded=false;fan.editors[i].setValue(r.text);fan.ranges[i]=null;s.revision=r.revision;s.filename=r.filename;s.baseline=fan.editors[i].getValue();s.loaded=true;fan.frames[i].contentDocument.getElementById("editor").inert=false;s.external=false;s.dirty=false;s.status=fan.status(i);}
+ if(r.ok){s.loaded=false;s.url=r.url;s.assetPrefix=r.assetPrefix;fan.frames[i].contentWindow.updateNoteLocation();fan.editors[i].setValue(r.text);fan.ranges[i]=null;s.revision=r.revision;s.filename=r.filename;s.baseline=fan.editors[i].getValue();s.loaded=true;fan.frames[i].contentDocument.getElementById("editor").inert=false;s.external=false;s.dirty=false;s.status=fan.status(i);}
  else s.status=r.error;
  s.busy=false;fan.publish();
 };
