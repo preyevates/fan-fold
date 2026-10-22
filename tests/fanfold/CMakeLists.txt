@@ -16,6 +16,10 @@ if(NODE_EXECUTABLE)
         COMMAND ${NODE_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_pending_edits.js)
     add_test(NAME fanfold-navigation-gate
         COMMAND ${NODE_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_navigation_gate.js)
+    add_test(NAME fanfold-note-link-routing
+        COMMAND ${NODE_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_note_link_routing.js)
+    add_test(NAME fanfold-asset-link-paths
+        COMMAND ${NODE_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_asset_link_paths.js)
     add_test(NAME fanfold-markdown-fidelity
         COMMAND ${NODE_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_markdown_fidelity.js)
 endif()
@@ -30,6 +34,10 @@ add_test(NAME fanfold-heading-links
     COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/test_heading_links.py
             --evidence ${CMAKE_CURRENT_BINARY_DIR}/heading-links-evidence)
 set_tests_properties(fanfold-heading-links PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
+add_test(NAME fanfold-relative-links
+    COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/test_relative_links.py
+            --evidence ${CMAKE_CURRENT_BINARY_DIR}/relative-links-evidence)
+set_tests_properties(fanfold-relative-links PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
 
 add_test(NAME fanfold-icon-export-security
     COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/test_icon_export_security.py)

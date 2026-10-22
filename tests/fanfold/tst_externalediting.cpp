@@ -2,11 +2,13 @@
 #include "storeadapter.h"
 
 #include <QDirIterator>
+#include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <QSaveFile>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QUrl>
 
 namespace {
 void replaceFile(const QString &path, const QByteArray &bytes)
@@ -29,6 +31,7 @@ class ExternalEditingTest : public QObject
 {
     Q_OBJECT
 private slots:
+    void loadReportsEncodedNoteUrl();
     void cleanExternalRevisionCannotBeOverwrittenByStaleEditor();
     void externalRevisionBeforeReconcileCannotBeOverwritten();
     void dirtyBufferSurvivesExternalEditAndRestart();
@@ -36,6 +39,25 @@ private slots:
     void failedRecoveryJournalIsReportedAndPreventsUnsafeSave();
     void lateWriteThroughExternalDescriptorRemainsReachable();
 };
+
+void ExternalEditingTest::loadReportsEncodedNoteUrl()
+{
+    QTemporaryDir notes, state;
+    QVERIFY(notes.isValid() && state.isValid());
+    QVERIFY(QDir(notes.path()).mkpath("Remediation #%"));
+    const QString path = notes.filePath("Remediation #%/Source.md");
+    replaceFile(path, "[Sibling](../Other/x.md)\n");
+    DocumentCollection collection(state.path());
+    QVERIFY(collection.openRoot(notes.path()));
+    StoreAdapter adapter(&collection);
+    const QVariantMap loaded = adapter.load(collection.idForRelativePath("Remediation #%/Source.md"));
+    QVERIFY(loaded.value("ok").toBool());
+    const QString url = loaded.value("url").toString();
+    QCOMPARE(loaded.value("assetPrefix").toString(), QStringLiteral("../"));
+    QVERIFY(url.endsWith("/Remediation%20%23%25/Source.md"));
+    QCOMPARE(QUrl(url).toLocalFile(), path);
+    QCOMPARE(QUrl(url).resolved(QUrl("../Other/x.md")).toLocalFile(), notes.filePath("Other/x.md"));
+}
 
 void ExternalEditingTest::cleanExternalRevisionCannotBeOverwrittenByStaleEditor()
 {

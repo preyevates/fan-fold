@@ -4,6 +4,9 @@
 
 #include <QCryptographicHash>
 #include <QDateTime>
+#include <QDir>
+#include <QFileInfo>
+#include <QUrl>
 
 StoreAdapter::StoreAdapter(DocumentCollection *collection, QObject *parent)
     : QObject(parent)
@@ -37,10 +40,14 @@ QVariantMap StoreAdapter::load(const QString &id)
     const QString text = document->content();
     const QString revision = digestOf(text);
     m_loaded.insert(id, revision);
+    const QString assetRoot = QDir(QFileInfo(document->absolutePath()).absolutePath())
+                                  .relativeFilePath(m_collection->rootPath());
     return {{QStringLiteral("ok"), true},
             {QStringLiteral("text"), text},
             {QStringLiteral("revision"), revision},
             {QStringLiteral("filename"), document->fileName()},
+            {QStringLiteral("url"), QUrl::fromLocalFile(document->absolutePath()).toString(QUrl::FullyEncoded)},
+            {QStringLiteral("assetPrefix"), assetRoot == QLatin1String(".") ? QString() : assetRoot + QLatin1Char('/')},
             {QStringLiteral("title"), document->title()}};
 }
 

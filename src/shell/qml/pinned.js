@@ -19,7 +19,7 @@
 const noteId = new URLSearchParams(location.search).get("id") || "";
 let pinned;
 const fan = window.fan = {editors: [], frames: [], states: [], active: 0, state: null,
-                          own: null, manifest: null, linkBase: ""};
+                          own: null, manifest: null};
 window.fixtures = [];
 
 fan.call = (method, ...args) => new Promise(resolve => pinned[method](...args, resolve));
@@ -284,13 +284,10 @@ new QWebChannel(qt.webChannelTransport, async channel => {
     pinned.status("loaded " + (r.text ? r.text.length : 0) + " chars", false, false);
     fan.state = {id: noteId, loaded: false, dirty: false, busy: false, external: false,
                  revision: r.ok ? r.revision : "", baseline: "",
-                 status: r.ok ? "Saved" : r.error};
+                 status: r.ok ? "Saved" : r.error, url: r.url, assetPrefix: r.assetPrefix};
     fan.states = [fan.state];
     fixtures[0] = r.ok ? r.text : "";
-    // Relative asset links resolve against the notes folder, as in the deck. Must be set
-    // before the editor frame is built; it reads this when constructing its editor.
-    const root = await fan.call("libraryPath");
-    fan.linkBase = root ? ("file://" + String(root).replace(/\/*$/, "/")) : "";
+
     await new Promise(resolve => {
         // Resolve on Vditor's OWN ready callback (editor.js calls parent.fan.onReady),
         // never on the iframe's `load` event. `load` fires when the document is parsed,

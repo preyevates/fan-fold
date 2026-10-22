@@ -175,9 +175,6 @@ fan.setOrder=async ids=>{const r=await fan.call("setOrder",ids);if(r.ok)await fa
 /** Re-read the native manifest and repaint per-note colours; never rebuilds editors. */
 fan.refresh=async()=>{fan.manifest=await fan.call("manifest");window.appearance&&appearance.apply();return fan.manifest;};
 
-/** file:// URL of the notes folder, so relative asset links resolve there. Set once at
- *  boot and read by each editor frame's `preview.markdown.linkBase`. */
-fan.linkBase="";
 
 /** @return the palette record currently offering choices, with its swatches.
  * `palettes` is the full named theme/variant CHOICE list and carries labels only, so
@@ -245,7 +242,7 @@ fan.build=async id=>{
  const r=await fan.call("loadNote",id);
  fan.states[i]={id,loaded:false,dirty:false,revision:r.ok?r.revision:"",baseline:"",
                 status:r.ok?"Saved":r.error,external:false,busy:false,
-                filename:r.ok?r.filename:id};
+                filename:r.ok?r.filename:id,url:r.ok?r.url:"",assetPrefix:r.assetPrefix};
  fixtures[i]=r.ok?r.text:"";
  await new Promise(resolve=>{
   fan.resolveReady=resolve;fan.constructions++;
@@ -313,15 +310,12 @@ fan.selectionInfo=()=>{const s=fan.frames[fan.active].contentWindow.getSelection
 fan.onReady=(index,editor)=>{fan.editors[index]=editor;if(editor.vditor&&editor.vditor.element)fan._caretHook(editor.vditor.element);const s=fan.states[index];if(s.revision){s.baseline=editor.getValue();s.loaded=true;s.dirty=false;s.status=fan.status(index);}else{fan.frames[index].contentDocument.getElementById("editor").inert=true;}fan.resolveReady();};
 new QWebChannel(qt.webChannelTransport,async channel=>{
  notes=window.notes=channel.objects.notes;
- // Resolve relative asset links against the library folder. Must be set BEFORE the
- // editor frames are built, since each reads it when constructing its Vditor.
- const root=await new Promise(r=>notes.libraryPath(r));
- fan.linkBase=root?("file://"+String(root).replace(/\/*$/,"/")):"";
+
  fan.manifest=await fan.call("manifest");
  fan.states=fan.manifest.ids.map(id=>({id,loaded:false,dirty:false,revision:"",baseline:"",status:"Saved",external:false,busy:false,filename:fan.manifest.files[id]}));
  for(let i=0;i<fan.states.length;i++){
   const s=fan.states[i],r=await fan.call("loadNote",s.id);
-  if(r.ok){fixtures[i]=r.text;s.revision=r.revision;s.filename=r.filename;}else{fixtures[i]="";s.status=r.error;}
+  if(r.ok){fixtures[i]=r.text;s.revision=r.revision;s.filename=r.filename;s.url=r.url;s.assetPrefix=r.assetPrefix;}else{fixtures[i]="";s.status=r.error;}
   await new Promise(resolve=>{
    fan.resolveReady=resolve;fan.constructions++;
    const frame=document.createElement("iframe");fan.frames[i]=frame;

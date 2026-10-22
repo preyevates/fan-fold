@@ -33,7 +33,7 @@ class StoreAdapter final : public QObject
 public:
     explicit StoreAdapter(DocumentCollection *collection, QObject *parent = nullptr);
 
-    /** Content plus a revision token. @return {ok,text,revision,filename,title}. */
+    /** Content plus a revision token. @return {ok,text,revision,filename,url,assetPrefix,title}. */
     Q_INVOKABLE QVariantMap load(const QString &id);
 
     /** Read-only state probe, polled once a second by the editor.

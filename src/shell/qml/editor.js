@@ -4,6 +4,7 @@
  */
 "use strict";
 const index=Number(new URLSearchParams(location.search).get("note"));
+const noteUrl=parent.fan.states[index].url;
 
 // Resolve against the current rendered headings: editing can replace their DOM at any
 // time. Keep the renderer's IDs and the source untouched; neither uses these slugs.
@@ -12,7 +13,19 @@ document.addEventListener("click",event=>{
  if(!link)return;
  const href=link.matches("a")?link.getAttribute("href")
   :link.closest('[data-type="a"]')?.querySelector(".vditor-ir__marker--link")?.textContent;
- if(!href || !href.startsWith("#"))return;
+ if(!href)return;
+ if(!href.startsWith("#")){
+  if(link.closest('[data-type="a"]')?.classList.contains('vditor-ir__node--expand'))return;
+  // Resolve before Chromium loses the authored relative path to editor.html's base.
+  event.preventDefault();event.stopImmediatePropagation();
+  if(!noteUrl)return;
+  try{
+   const target=new URL(href,noteUrl);
+   if(target.protocol==="javascript:" || target.protocol==="data:")return;
+   window.open(target.href,"_blank");
+  }catch{}
+  return;
+ }
  // Consume even missing/malformed fragments before the renderer can open a window.
  event.preventDefault();event.stopImmediatePropagation();
  let fragment;
@@ -89,11 +102,11 @@ let editor=new Vditor("editor",{
  // sixteen renderer aliases (mermaid, flowchart, echarts…) — bash, yaml and text would be
  // missing from it. Loading hljs supplies the real list.
  preview:{delay:100,hljs:{enable:true,style:"github",lineNumber:false},
-  // linkBase makes a RELATIVE asset path resolve against the NOTES FOLDER rather than
+  // linkBase makes a RELATIVE asset path resolve against the NOTE'S FOLDER rather than
   // against this page's own directory under /usr/share/fanfold/qml. Without it
   // `![](Assets/images/x.png)` would be looked up beside editor.html and render broken,
   // which is the whole reason assets are stored relatively in the first place.
-  markdown:{sanitize:true, linkBase:(parent.fan&&parent.fan.linkBase)||""}},
+  markdown:{sanitize:true, linkBase:noteUrl?new URL(".",noteUrl).href:""}},
  input:()=>parent.fan.changed(index),
  after:()=>{ parent.fan.onReady(index,editor); installTableControls(); installRecorder(); brandUploadButton(); installNoteFont(); }
 });

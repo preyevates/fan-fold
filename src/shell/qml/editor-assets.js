@@ -6,6 +6,9 @@
  * `beginRecordingName()`. Loaded after the page's own script, which creates `fan`.
  */
 "use strict";
+// Imports live at the library root, but authored URLs belong to the note's folder.
+fan.assetHref=(slot,relative)=>((fan.states[slot].assetPrefix||"")+relative)
+ .split("/").map(encodeURIComponent).join("/");
 /**
  * Copy dropped/pasted/recorded files into the library's Assets tree and insert links.
  *
@@ -48,7 +51,7 @@ fan.importRecording=async(slot,base64,mime)=>{
   // the container is chosen by this code, and a hand-typed suffix would be doubled.
   const r=await fan.call("importAsset",name+".webm",base64,mime||"audio/webm");
   if(!r||!r.ok){ notes.status((r&&r.error)||"That recording could not be saved",false,false); return; }
-  const path=encodeURI(r.relative);
+  const path=fan.assetHref(slot,r.relative);
   const block=`<audio controls src="${path}"></audio>`;
   const current=editor.getValue();
   const sep=current.length&&!/\n\n$/.test(current)?(/\n$/.test(current)?"\n":"\n\n"):"";
@@ -127,7 +130,7 @@ fan._restoreCaret=(host,offset)=>{
 fan.appendImage=(slot,relative,label,inline)=>{
  const editor=fan.editors[slot]; if(!editor||!relative) return;
  const alt=String(label||relative).replace(/[\[\]~]/g,"");
- const href=encodeURI(relative);
+ const href=fan.assetHref(slot,relative);
  // WRAP is a styled MARKDOWN image (![alt~wrap](href) plus a CSS float keyed on the alt
  // suffix). Vditor's IR mode renders inline HTML as a permanently escaped source marker,
  // so <img align> can never paint. Pure Markdown; other renderers show a plain image.
@@ -200,7 +203,7 @@ fan.importFiles=async(slot,files)=>{
     // splices the link into the heading, and insertMD can place the block off-screen.
     // Appending through setValue is predictable regardless of caret position and keeps
     // the whole insertion inside Vditor's own undo history.
-    const path=encodeURI(r.relative);
+    const path=fan.assetHref(slot,r.relative);
     const label=(file.name||r.relative).replace(/[\[\]]/g,"");
     const markdown=r.bucket==="images" ? `![${label}](${path})` : `[${label}](${path})`;
     const current=editor.getValue().replace(/\s*$/,"");

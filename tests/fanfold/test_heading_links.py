@@ -3,6 +3,7 @@ import argparse
 import functools
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 import json
+import os
 from pathlib import Path
 import sys
 import threading
@@ -44,7 +45,7 @@ def main():
     results = []
     try:
         with sync_playwright() as p:
-            browser = p.chromium.launch()
+            browser = p.chromium.launch(executable_path=os.environ.get('FANFOLD_TEST_CHROMIUM'))
             for mode in ('ir-focused', 'ir-rendered', 'wysiwyg', 'preview'):
                 page = browser.new_page(viewport={'width': 582, 'height': 620})
                 page.route('**/editor.js', lambda route: route.abort())
@@ -52,7 +53,7 @@ def main():
                 # Only the native bridge is replaced; editor.js is unmodified.
                 page.evaluate('''markdown=>{
                     window.fixtures=[markdown]; window.notes={collapse(){}};
-                    window.fan={active:0,linkBase:'file:///notes/',changed(){window.changes++},
+                    window.fan={active:0,states:[{url:'file:///notes/Source.md'}],changed(){window.changes++},
                         remember(){},onReady(i,e){window.testEditor=e;window.ready=true}};
                     window.changes=0;
                 }''', MARKDOWN)
@@ -75,7 +76,7 @@ def main():
                 before = page.evaluate('testEditor.getValue()')
                 page.evaluate('''()=>{window.escaped=[];window.open=url=>escaped.push(url);
                     document.addEventListener('click',e=>{const a=e.target.closest('a');
-                        if(a){escaped.push(a.getAttribute('href'));e.preventDefault()} });}''')
+                        if(a&&!e.defaultPrevented){escaped.push(a.getAttribute('href'));e.preventDefault()} });}''')
                 checks=[]
                 for i, (_, slug) in enumerate(HEADINGS):
                     if mode == 'ir-focused':
@@ -103,9 +104,10 @@ def main():
                     page.locator(root + (' .vditor-ir__link' if mode.startswith('ir') else ' a')).nth(9+i).click()
                 forwarded = page.evaluate('escaped').copy()
                 del forwarded[:len(escaped)]
-                expected = OTHER_LINKS if mode != 'wysiwyg' else [
+                expected = [
                     # Preserve the renderer's existing scheme handling as well as paths.
-                    'file:///notes/' + href if '://' not in href else href
+                    ('file:///notes/' + href if '://' not in href and not href.startswith('mailto:') else href)
+                    if mode != 'wysiwyg' else ('file:///notes/' + href if '://' not in href else href)
                     for href in OTHER_LINKS]
                 result=dict(mode=mode,checks=checks,unchanged=unchanged,escaped=escaped,
                             changes=page.evaluate('changes'),missingStayed=missing_stayed,
